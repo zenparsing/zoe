@@ -58,7 +58,10 @@ namespace url {
     std::vector<std::string> path;
 
     static URLInfo parse(const std::string& url, const URLInfo* base = nullptr);
+    static URLInfo from_file_path(const std::string& path, const URLInfo* base = nullptr);
+
     static std::string stringify(const URLInfo& info);
+    static std::string to_file_path(const URLInfo& info);
   };
 
 }

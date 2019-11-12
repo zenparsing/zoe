@@ -5,8 +5,10 @@
 #include <list>
 #include <vector>
 #include <utility>
+
 #include "ChakraCore.h"
-#include "on_scope_exit.h"
+
+#include "util.h"
 #include "url.h"
 
 using url::URLInfo;
@@ -15,30 +17,148 @@ namespace js {
 
   using Var = JsValueRef;
 
-  // Forward
-  struct RealmInterface;
+  struct VarRef {
+    Var _ref;
 
-  struct EngineError {};
+    VarRef() : _ref {nullptr} {}
+
+    explicit VarRef(void* ref) : _ref {ref} {
+      if (_ref) {
+        JsAddRef(_ref, nullptr);
+      }
+    }
+
+    VarRef(const VarRef& other) = delete;
+    VarRef& operator=(const VarRef& other) = delete;
+
+    VarRef(VarRef&& other) : _ref {other._ref} {
+      other._ref = nullptr;
+    }
+
+    VarRef& operator=(VarRef&& other) {
+      if (this != &other) {
+        _ref = other._ref;
+        other._ref = nullptr;
+      }
+      return *this;
+    }
+
+    ~VarRef() {
+      if (_ref) {
+        JsRelease(_ref, nullptr);
+      }
+    }
+
+    explicit operator bool() const {
+      return _ref != nullptr;
+    }
+
+    const Var var() const { return _ref; }
+    Var var() { return _ref; }
+
+    void clear() {
+      if (_ref) {
+        JsRelease(_ref, nullptr);
+        _ref = nullptr;
+      }
+    }
+
+  };
+
+  struct EngineError {
+    JsErrorCode code;
+  };
+
+  enum class ModuleState {
+    loading,
+    parsing,
+    initializing,
+    complete,
+    error,
+  };
 
   struct ModuleInfo {
+    ModuleState state = ModuleState::loading;
     URLInfo url;
+    VarRef source;
+  };
+
+  enum class JobType {
+    call,
+    parse_module,
+    evaluate_module,
+  };
+
+  struct Job {
+    JobType _type;
+    VarRef _func;
+    std::vector<Var> _args;
+
+    Job(JobType type, Var func) : _type {type}, _func {func} {}
+
+    Job(JobType type, Var func, std::vector<Var>&& args) :
+      _type {type},
+      _func {func},
+      _args {args}
+    {
+      for (Var arg : args) {
+        JsAddRef(arg, nullptr);
+      }
+    }
+
+    Job(const Job& other) = delete;
+    Job& operator=(const Job& other) = delete;
+
+    Job(Job&& other) = default;
+    Job& operator=(Job&& other) = default;
+
+    ~Job() {
+      for (Var arg : _args) {
+        JsRelease(arg, nullptr);
+      }
+    }
+
+    const JobType type() const { return _type; }
+    const Var func() const { return _func.var(); }
+    const std::vector<Var>& args() const { return _args; }
+  };
+
+  struct JobQueue {
+    std::list<Job> _queue;
+
+    bool empty() const { return _queue.empty(); }
+
+    void enqueue(Job&& job) {
+      _queue.push_back(std::move(job));
+    }
+
+    Job dequeue() {
+      Job job = std::move(_queue.front());
+      _queue.pop_front();
+      return std::move(job);
+    }
   };
 
   struct RealmInfo {
     JsSourceContext next_script_id = 0;
-    std::map<std::string, JsModuleRecord> module_map;
+    VarRef module_load_callback;
+    std::map<std::string, VarRef> module_map;
     std::map<JsModuleRecord, ModuleInfo> module_info;
     std::map<JsSourceContext, URLInfo> script_urls;
+    JobQueue* job_queue;
   };
+
+  // Forward
+  struct RealmAPI;
 
   struct Realm {
     JsContextRef _context;
     RealmInfo _info;
 
-    explicit Realm(JsRuntimeHandle runtime) {
-      if (JsCreateContext(runtime, &_context) != JsNoError) {
-        throw EngineError {};
-      }
+    explicit Realm(JsContextRef context, JobQueue* job_queue) :
+      _context {context}
+    {
+      _info.job_queue = job_queue;
       JsSetContextData(_context, this);
     }
 
@@ -79,14 +199,14 @@ namespace js {
     }
 
     template<typename F>
-    JsValueRef enter(F fn) {
+    Var enter(F fn) {
       JsContextRef current = nullptr;
       JsGetCurrentContext(&current);
       JsSetCurrentContext(_context);
       auto cleanup = on_scope_exit([=]() {
         JsSetCurrentContext(current);
       });
-      return fn(RealmInterface {this});
+      return fn(RealmAPI {*this});
     }
 
     static Realm* from_context_ref(JsContextRef context) {
@@ -104,55 +224,59 @@ namespace js {
       return Realm::from_context_ref(context);
     }
 
-    static Realm* from_object(JsValueRef object) {
+    static Realm* from_object(Var object) {
       JsContextRef context = nullptr;
       JsGetContextOfObject(object, &context);
       return Realm::from_context_ref(context);
     }
 
+    template<typename F>
+    static Var enter_current(F fn) {
+      return fn(RealmAPI {*Realm::current()});
+    }
+
   };
 
-  struct ResolveModuleResult {
-    JsModuleRecord module_record;
-    std::string url;
-    bool is_new;
-  };
+  struct RealmAPI {
+    Realm& _realm;
 
-  struct RealmInterface {
-    Realm* _realm;
+    explicit RealmAPI(Realm& realm) : _realm {realm} {}
 
-    explicit RealmInterface(Realm* realm) : _realm {realm} {}
-
-    JsValueRef eval(JsValueRef source, const std::string& url = "") {
-      auto id = _realm->info().next_script_id++;
-      _realm->info().script_urls[id] = URLInfo::parse(url);
-      JsValueRef result;
+    Var eval(Var source, const std::string& url = "") {
+      auto id = _realm.info().next_script_id++;
+      _realm.info().script_urls[id] = URLInfo::parse(url);
+      Var result;
       JsRun(source, id, create_string(url), JsParseScriptAttributeNone, &result);
       return result;
     }
 
-    JsValueRef call_function(JsValueRef fn, const std::vector<JsValueRef>& args) {
-      JsValueRef result;
-      JsValueRef* args_ptr = const_cast<JsValueRef*>(args.data());
-      auto count = static_cast<unsigned short>(args.size());
-      JsCallFunction(fn, args_ptr, count, &result);
+    Var call_function(Var fn, const std::vector<Var>& args = {}) {
+      Var result;
+      if (args.empty()) {
+        Var arg = undefined();
+        JsCallFunction(fn, &arg, 1, &result);
+      } else {
+        Var* args_ptr = const_cast<Var*>(args.data());
+        auto count = static_cast<unsigned short>(args.size());
+        JsCallFunction(fn, args_ptr, count, &result);
+      }
       return result;
     }
 
-    JsValueRef create_object() {
-      JsValueRef result;
+    Var create_object() {
+      Var result;
       JsCreateObject(&result);
       return result;
     }
 
-    JsValueRef create_array(unsigned length = 0) {
-      JsValueRef result;
+    Var create_array(unsigned length = 0) {
+      Var result;
       JsCreateArray(length, &result);
       return result;
     }
 
-    JsValueRef create_number(int value) {
-      JsValueRef result;
+    Var create_number(int value) {
+      Var result;
       JsIntToNumber(value, &result);
       return result;
     }
@@ -163,63 +287,72 @@ namespace js {
       return id;
     }
 
-    JsValueRef create_string(const char* buffer) {
+    Var create_string(const char* buffer) {
       return create_string(buffer, std::char_traits<char>::length(buffer));
     }
 
-    JsValueRef create_string(const char* buffer, size_t length) {
-      JsValueRef value;
+    Var create_string(const char* buffer, size_t length) {
+      Var value;
       JsCreateString(buffer, length, &value);
       return value;
     }
 
-    JsValueRef create_string(const std::string& name) {
+    Var create_string(const std::string& name) {
       return create_string(name.data(), name.length());
     }
 
-    JsValueRef empty_string() {
+    Var empty_string() {
       return create_string("", 0);
     }
 
-    template<typename F>
-    JsValueRef create_function(const std::string& name, F callback) {
-      JsValueRef func;
-      JsCreateNamedFunction(create_string(name), native_func_callback<F>, callback, &func);
+    Var create_function(
+      const std::string& name,
+      JsNativeFunction native_func,
+      Var hidden = nullptr)
+    {
+      Var func;
+      JsCreateNamedFunction(create_string(name), native_func, hidden, &func);
       return func;
     }
 
-    void set_property(JsValueRef object, const std::string& name, JsValueRef value) {
+    Var get_property(Var object, const std::string& name) {
+      Var result;
+      JsGetProperty(object, create_property_id(name), &result);
+      return result;
+    }
+
+    void set_property(Var object, const std::string& name, Var value) {
       JsSetProperty(object, create_property_id(name), value, true);
     }
 
-    void set_indexed_property(JsValueRef object, JsValueRef index, JsValueRef value) {
+    void set_indexed_property(Var object, Var index, Var value) {
       JsSetIndexedProperty(object, index, value);
     }
 
-    void set_indexed_property(JsValueRef object, int index, JsValueRef value) {
+    void set_indexed_property(Var object, int index, Var value) {
       return set_indexed_property(object, create_number(index), value);
     }
 
-    JsValueRef undefined() {
-      JsValueRef value;
+    Var undefined() {
+      Var value;
       JsGetUndefinedValue(&value);
       return value;
     }
 
-    JsValueRef global_object() {
-      JsValueRef global;
+    Var global_object() {
+      Var global;
       JsGetGlobalObject(&global);
       return global;
     }
 
-    JsValueRef to_string(JsValueRef value) {
-      JsValueRef result;
+    Var to_string(Var value) {
+      Var result;
       JsConvertValueToString(value, &result);
       return result;
     }
 
-    std::string utf8_string(JsValueRef value) {
-      JsValueRef string_value = to_string(value);
+    std::string utf8_string(Var value) {
+      Var string_value = to_string(value);
       size_t length;
       JsCopyString(string_value, nullptr, 0, &length);
       // TODO: This will pre-initialize the data to zeros. Can we get around
@@ -230,83 +363,161 @@ namespace js {
       return std::move(buffer);
     }
 
-    ResolveModuleResult resolve_module_specifier(
-      JsValueRef specifier,
+    JsModuleRecord resolve_module_specifier(
+      Var specifier,
       const URLInfo* base_url,
       JsModuleRecord importer = nullptr)
     {
+      // TODO: handle failure to parse as URL
       auto url_info = URLInfo::parse(utf8_string(specifier), base_url);
       auto url = URLInfo::stringify(url_info);
+      Var url_string = create_string(url);
 
-      // TODO: handle failure to parse as URL
-
-      auto& module_map = _realm->_info.module_map;
+      auto& module_map = _realm._info.module_map;
       if (auto p = module_map.find(url); p != module_map.end()) {
-        return {p->second, std::move(url), false};
+        return p->second.var();
       }
 
-      JsValueRef url_string = create_string(url);
       JsModuleRecord module;
       JsInitializeModuleRecord(importer, url_string, &module);
       JsSetModuleHostInfo(module, JsModuleHostInfo_Url, url_string);
 
-      module_map[url] = module;
-      _realm->info().module_info[module].url = std::move(url_info);
+      module_map[url] = VarRef {module};
+      _realm.info().module_info[module].url = std::move(url_info);
 
-      return {module, std::move(url), true};
+      enqueue_job(Job {
+        JobType::call,
+        get_module_load_callback(),
+        {undefined(), url_string}
+      });
+
+      return module;
     }
 
-    ResolveModuleResult resolve_module(
-      JsModuleRecord importer,
-      JsValueRef specifier)
-    {
+    JsModuleRecord resolve_module(JsModuleRecord importer, Var specifier) {
       const URLInfo* base_url = nullptr;
-      auto& module_info = _realm->_info.module_info;
+      auto& module_info = _realm._info.module_info;
       if (auto p = module_info.find(importer); p != module_info.end()) {
         base_url = &p->second.url;
       }
       return resolve_module_specifier(specifier, base_url, importer);
     }
 
-    ResolveModuleResult resolve_module_from_script(
-      JsSourceContext script_id,
-      JsValueRef specifier)
-    {
+    JsModuleRecord resolve_module_from_script(JsSourceContext script_id,Var specifier) {
       const URLInfo* base_url = nullptr;
-      auto& script_urls = _realm->_info.script_urls;
+      auto& script_urls = _realm._info.script_urls;
       if (auto p = script_urls.find(script_id); p != script_urls.end()) {
         base_url = &p->second;
       }
       return resolve_module_specifier(specifier, base_url);
     }
 
-    template<typename F>
-    static JsValueRef CHAKRA_CALLBACK native_func_callback(
-      JsValueRef callee,
-      bool construct,
-      JsValueRef* args,
-      unsigned short arg_count,
-      void* state)
-    {
-      return reinterpret_cast<F>(state)(callee, args, arg_count, construct);
+    void set_module_load_callback(Var callback) {
+      _realm.info().module_load_callback = VarRef {callback};
+    }
+
+    Var get_module_load_callback() {
+      return _realm.info().module_load_callback.var();
+    }
+
+    ModuleInfo* find_module_info(Var module) {
+      auto& module_info = _realm.info().module_info;
+      if (auto p = module_info.find(module); p != module_info.end()) {
+        return &p->second;
+      }
+      return nullptr;
+    }
+
+    void set_module_source(Var url_string, Var source) {
+      auto url = utf8_string(url_string);
+      auto& module_map = _realm.info().module_map;
+      auto& module_info = _realm.info().module_info;
+
+      Var module;
+      if (auto p = module_map.find(url); p != module_map.end()) {
+        module = p->second.var();
+      } else {
+        // TODO: Throw (module does not exist)
+      }
+
+      ModuleInfo* info = find_module_info(module);
+      if (info->state != ModuleState::loading) {
+        // TODO: Throw (module not loading)
+      }
+
+      info->state = ModuleState::parsing;
+      info->source = VarRef {source};
+
+      enqueue_job(Job {
+        JobType::parse_module,
+        undefined(),
+        {module}
+      });
+    }
+
+    void parse_module(Var module) {
+      ModuleInfo* info = find_module_info(module);
+      auto source = utf8_string(info->source.var());
+      info->source.clear();
+
+      Var err;
+
+      JsParseModuleSource(
+        module,
+        _realm.info().next_script_id++,
+        reinterpret_cast<uint8_t*>(source.data()),
+        static_cast<unsigned>(source.length()),
+        JsParseModuleSourceFlags_DataIsUTF8,
+        &err);
+
+      if (err) {
+        info->state = ModuleState::error;
+        // TODO: Is this necessary?
+        JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, err);
+      } else {
+        info->state = ModuleState::initializing;
+      }
+    }
+
+    void evaluate_module(Var module) {
+      ModuleInfo* info = find_module_info(module);
+
+      Var result;
+      JsModuleEvaluation(module, &result);
+
+      bool has_error;
+			JsHasException(&has_error);
+
+			if (has_error) {
+        Var err;
+				JsGetAndClearException(&err);
+				JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, err);
+        info->state = ModuleState::error;
+			} else {
+        info->state = ModuleState::complete;
+      }
+    }
+
+    void initialize_import_meta(Var module, Var meta_object) {
+      Var url_string;
+      JsGetModuleHostInfo(module, JsModuleHostInfo_Url, &url_string);
+      set_property(meta_object, "url", url_string);
+    }
+
+    void enqueue_job(Job& job) {
+      _realm.info().job_queue->enqueue(std::move(job));
     }
 
   };
 
   struct Engine {
     JsRuntimeHandle _runtime;
-    std::list<JsValueRef> _task_queue;
-
-    inline static Engine* instance = nullptr;
+    JobQueue _job_queue;
 
     Engine() {
-      if (Engine::instance) {
-        throw EngineError {};
-      }
       if (JsCreateRuntime(JsRuntimeAttributeNone, nullptr, &_runtime) != JsNoError) {
         throw EngineError {};
       }
-      Engine::instance = this;
     }
 
     Engine(const Engine& other) = delete;
@@ -314,14 +525,14 @@ namespace js {
 
     Engine(Engine&& other) {
       _runtime = other._runtime;
-      _task_queue = std::move(other._task_queue);
+      _job_queue = std::move(other._job_queue);
       other._runtime = JS_INVALID_RUNTIME_HANDLE;
     }
 
     Engine& operator=(Engine&& other) {
       if (this != &other) {
         _runtime = other._runtime;
-        _task_queue = std::move(other._task_queue);
+        _job_queue = std::move(other._job_queue);
         other._runtime = JS_INVALID_RUNTIME_HANDLE;
       }
       return *this;
@@ -331,18 +542,22 @@ namespace js {
       if (_runtime != JS_INVALID_RUNTIME_HANDLE) {
         JsSetCurrentContext(nullptr);
         JsDisposeRuntime(_runtime);
-        Engine::instance = nullptr;
         _runtime = JS_INVALID_RUNTIME_HANDLE;
       }
     }
 
     Realm create_realm() {
-      Realm realm {_runtime};
+      JsContextRef context;
+      if (JsCreateContext(_runtime, &context) != JsNoError) {
+        throw EngineError {};
+      }
 
-      realm.enter([](auto api) {
+      Realm realm {context, &_job_queue};
+
+      realm.enter([&, this](auto api) {
         // Initialize promise callbacks
-        JsSetPromiseContinuationCallback(enqueue_promise_callback, nullptr);
-        JsSetHostPromiseRejectionTracker(rejection_tracker_callback, nullptr);
+        JsSetPromiseContinuationCallback(enqueue_promise_callback, this);
+        JsSetHostPromiseRejectionTracker(rejection_tracker_callback, this);
 
         // Initialize module callbacks
         JsModuleRecord module_record;
@@ -374,92 +589,104 @@ namespace js {
       return std::move(realm);
     }
 
-    void flush_task_queue() {
-      while (_task_queue.size() > 0) {
-        JsValueRef front = _task_queue.front();
-        _task_queue.pop_front();
-        if (auto realm = Realm::from_object(front)) {
-          realm->enter([=](auto api) {
-            return api.call_function(front, {api.undefined()});
-          });
-        }
+    void flush_job_queue() {
+      while (!_job_queue.empty()) {
+        Job job = std::move(_job_queue.dequeue());
+        Realm::from_object(job.func())->enter([&](auto api) {
+          switch (job.type()) {
+            case JobType::call:
+              api.call_function(
+                job.func(),
+                job.args().empty()
+                  ? std::vector<Var> {api.undefined()}
+                  : job.args());
+              break;
+
+            case JobType::parse_module:
+              api.parse_module(job.args()[0]);
+              break;
+
+            case JobType::evaluate_module:
+              api.evaluate_module(job.args()[0]);
+              break;
+          }
+          return nullptr;
+        });
       }
     }
 
-    static void CHAKRA_CALLBACK enqueue_promise_callback(
-      JsValueRef task,
-      void* state)
-    {
-      Engine::instance->_task_queue.push_back(task);
+    static void CHAKRA_CALLBACK enqueue_promise_callback(Var func, void* state) {
+      Engine* instance = reinterpret_cast<Engine*>(state);
+      instance->_job_queue.enqueue(Job {JobType::call, func});
     }
 
     static void CHAKRA_CALLBACK rejection_tracker_callback(
-      JsValueRef promise,
-      JsValueRef reason,
+      Var promise,
+      Var reason,
       bool handled,
       void* state)
     {
+      Engine* instance = reinterpret_cast<Engine*>(state);
       // TODO
     }
 
     static JsErrorCode CHAKRA_CALLBACK import_fetch_callback(
       JsModuleRecord importer,
-      JsValueRef specifier,
+      Var specifier,
       JsModuleRecord* module)
     {
-      Realm::current()->enter([=](auto api) {
-        auto result = api.resolve_module(importer, specifier);
-        *module = result.module_record;
-        if (result.is_new) {
-          // TODO: enqueue a task to fetch the module and eventually call
-          // JsParseModuleSource
-        }
-        return nullptr;
+      *module = Realm::enter_current([=](auto api) {
+        return api.resolve_module(importer, specifier);
       });
       return JsNoError;
     }
 
     static JsErrorCode CHAKRA_CALLBACK dynamic_import_fetch_callback(
       JsSourceContext script_id,
-      JsValueRef specifier,
+      Var specifier,
       JsModuleRecord* module)
     {
-      Realm::current()->enter([=](auto api) {
-        auto result = api.resolve_module_from_script(script_id, specifier);
-        *module = result.module_record;
-        if (result.is_new) {
-          // TODO: enqueue a task to fetch the module and eventually call
-          // JsParseModuleSource
-        }
-        return nullptr;
+      *module = Realm::enter_current([=](auto api) {
+        return api.resolve_module_from_script(script_id, specifier);
       });
       return JsNoError;
     }
 
     static JsErrorCode CHAKRA_CALLBACK module_ready_callback(
       JsModuleRecord module,
-      JsValueRef exception)
+      Var exception)
     {
-      // Enqueue a task to perform JsModuleEvaluation
+      // WARN: The current realm should always be the module's realm
+      Realm::enter_current([=](auto api) {
+        api.enqueue_job(Job {
+          JobType::evaluate_module,
+          api.undefined(),
+          {module}
+        });
+        return nullptr;
+      });
       return JsNoError;
     }
 
     static JsErrorCode CHAKRA_CALLBACK initialize_import_meta_callback(
       JsModuleRecord module,
-      JsValueRef import_meta)
+      Var meta_object)
     {
-      // TODO
+      Realm::enter_current([=](auto api) {
+        api.initialize_import_meta(module, meta_object);
+        return nullptr;
+      });
       return JsNoError;
     }
 
   };
 
-  Engine create_engine() {
-    return Engine {};
-  }
+  Engine create_engine();
+  Realm* current_realm();
 
-  Realm* current_realm() {
-    return Realm::current();
+  template<typename F>
+  Var enter_current_realm(F fn) {
+    return Realm::enter_current(fn);
   }
 
 }

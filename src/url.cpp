@@ -90,12 +90,19 @@ namespace {
   }
 
   // https://url.spec.whatwg.org/#start-with-a-windows-drive-letter
-  bool starts_with_windows_drive_letter(const char* p, const char* end) {
-    const size_t length = end - p;
+  template<typename T>
+  bool starts_with_windows_drive_letter(const T* p, size_t length) {
     return
       length >= 2 &&
       is_windows_drive_letter(p[0], p[1]) &&
       (length == 2 || p[2] == '/' || p[2] == '\\' || p[2] == '?' || p[2] == '#');
+  }
+
+  template<typename T>
+  bool starts_with_windows_drive_letter(const std::basic_string<T>& str) {
+    return
+      str.length() >= 2 &&
+      starts_with_windows_drive_letter(&str[0], str.length());
   }
 
   const char* hex[256] = {
@@ -1121,7 +1128,7 @@ namespace {
     ParseState state_override,
     URLInfo* url,
     bool has_url,
-    const URLInfo* base)
+    const URLInfo* base = nullptr)
   {
     const char* p = input;
     const char* end = input + len;
@@ -1698,7 +1705,7 @@ namespace {
                 state = ParseState::fragment;
                 break;
               default:
-                if (!starts_with_windows_drive_letter(p, end)) {
+                if (!starts_with_windows_drive_letter(p, end - p)) {
                   if (base->flags & Flags::has_host) {
                     url->flags |= Flags::has_host;
                     url->host = base->host;
@@ -1725,7 +1732,7 @@ namespace {
             if (
               has_base &&
               base->scheme == "file:" &&
-              !starts_with_windows_drive_letter(p, end))
+              !starts_with_windows_drive_letter(p, end - p))
             {
               if (is_normalized_windows_drive_letter(base->path[0])) {
                 url->flags |= Flags::has_path;
@@ -1925,6 +1932,30 @@ namespace {
 
 }
 
+URLInfo URLInfo::from_file_path(const std::string& path, const URLInfo* base) {
+  std::string escaped;
+  for (size_t i = 0; i < path.length(); ++i) {
+    escaped += path[i];
+    if (path[i] == '%') {
+      escaped += "25";
+    }
+  }
+
+  if (base) {
+    bool absolute =
+      path.length() > 0 && path[0] == '/' ||
+      starts_with_windows_drive_letter(path);
+
+    if (!absolute) {
+      return parse(escaped, base);
+    }
+  }
+
+  URLInfo info = parse("file://");
+  parse_url(escaped.c_str(), escaped.length(), ParseState::path_start, &info, true);
+  return std::move(info);
+}
+
 URLInfo URLInfo::parse(const std::string& url, const URLInfo* base) {
   URLInfo info;
   parse_url(url.c_str(), url.length(), ParseState::unknown, &info, false, base);
@@ -1970,4 +2001,63 @@ std::string URLInfo::stringify(const URLInfo& info) {
     ret += info.fragment;
   }
   return ret;
+}
+
+std::string URLInfo::to_file_path(const URLInfo& info) {
+  if (info.scheme != "file:") {
+    return "";
+  }
+
+#ifdef _WIN32
+  const char* slash = "\\";
+  auto is_slash = [](char ch) {
+    return ch == '/' || ch == '\\';
+  };
+#else
+  const char* slash = "/";
+  auto is_slash = [](char ch) {
+    return ch == '/';
+  };
+  if ((info.flags & Flags::has_host) && info.host.length() > 0) {
+    return "";
+  }
+#endif
+  std::string decoded_path;
+  for (const std::string& part : info.path) {
+    std::string decoded = percent_decode(part.c_str(), part.length());
+    for (char& ch : decoded) {
+      if (is_slash(ch)) {
+        return "";
+      }
+    }
+    decoded_path += slash + decoded;
+  }
+
+#ifdef _WIN32
+  // TODO(TimothyGu): Use "\\?\" long paths on Windows.
+
+  // If hostname is set, then we have a UNC path. Pass the hostname through
+  // ToUnicode just in case it is an IDN using punycode encoding. We do not
+  // need to worry about percent encoding because the URL parser will have
+  // already taken care of that for us. Note that this only causes IDNs with an
+  // appropriate `xn--` prefix to be decoded.
+  if ((info.flags & Flags::has_host) && info.host.length() > 0) {
+    std::string unicode_host;
+    if (!to_unicode(info.host, &unicode_host)) {
+      return "";
+    }
+    return "\\\\" + unicode_host + decoded_path;
+  }
+  // Otherwise, it's a local path that requires a drive letter.
+  if (decoded_path.length() < 3) {
+    return "";
+  }
+  if (decoded_path[2] != ':' || !is_ascii_alpha(decoded_path[1])) {
+    return "";
+  }
+  // Strip out the leading '\'.
+  return decoded_path.substr(1);
+#else
+  return decoded_path;
+#endif
 }
