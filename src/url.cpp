@@ -1051,7 +1051,7 @@ namespace {
 
   std::string stringify_host(const HostInfo& info) {
     if (info.type == HostType::domain || info.type == HostType::opaque) {
-      return std::move(info.domain_or_opaque);
+      return info.domain_or_opaque;
     }
 
     if (info.type == HostType::ipv4) {
@@ -1953,13 +1953,13 @@ URLInfo URLInfo::from_file_path(const std::string& path, const URLInfo* base) {
 
   URLInfo info = parse("file://");
   parse_url(escaped.c_str(), escaped.length(), ParseState::path_start, &info, true);
-  return std::move(info);
+  return info;
 }
 
 URLInfo URLInfo::parse(const std::string& url, const URLInfo* base) {
   URLInfo info;
   parse_url(url.c_str(), url.length(), ParseState::unknown, &info, false, base);
-  return std::move(info);
+  return info;
 }
 
 std::string URLInfo::stringify(const URLInfo& info) {

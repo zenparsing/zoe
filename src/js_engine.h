@@ -5,6 +5,7 @@
 #include <list>
 #include <vector>
 #include <utility>
+#include <iostream> // TODO: Debug only
 
 #include "ChakraCore.h"
 
@@ -66,6 +67,10 @@ namespace js {
   };
 
   struct EngineError {
+    JsErrorCode code;
+  };
+
+  struct ScriptError {
     JsErrorCode code;
   };
 
@@ -135,7 +140,7 @@ namespace js {
     Job dequeue() {
       Job job = std::move(_queue.front());
       _queue.pop_front();
-      return std::move(job);
+      return job;
     }
   };
 
@@ -206,7 +211,8 @@ namespace js {
       auto cleanup = on_scope_exit([=]() {
         JsSetCurrentContext(current);
       });
-      return fn(RealmAPI {*this});
+      RealmAPI api {*this};
+      return fn(api);
     }
 
     static Realm* from_context_ref(JsContextRef context) {
@@ -232,7 +238,8 @@ namespace js {
 
     template<typename F>
     static Var enter_current(F fn) {
-      return fn(RealmAPI {*Realm::current()});
+      RealmAPI api {*Realm::current()};
+      return fn(api);
     }
 
   };
@@ -242,11 +249,35 @@ namespace js {
 
     explicit RealmAPI(Realm& realm) : _realm {realm} {}
 
+    void throw_on_error(JsErrorCode code) {
+      if (code != JsNoError) {
+        bool has_exception;
+			  JsHasException(&has_exception);
+        if (has_exception) {
+          throw ScriptError {code};
+        }
+        throw EngineError {code};
+      }
+    }
+
+    Var pop_error_info() {
+      bool has_exception;
+      JsHasException(&has_exception);
+      if (!has_exception) {
+        return undefined();
+      }
+      Var error_info;
+      JsGetAndClearExceptionWithMetadata(&error_info);
+      return error_info;
+    }
+
     Var eval(Var source, const std::string& url = "") {
       auto id = _realm.info().next_script_id++;
       _realm.info().script_urls[id] = URLInfo::parse(url);
       Var result;
-      JsRun(source, id, create_string(url), JsParseScriptAttributeNone, &result);
+      throw_on_error(
+        JsRun(source, id, create_string(url), JsParseScriptAttributeNone, &result)
+      );
       return result;
     }
 
@@ -360,7 +391,7 @@ namespace js {
       std::string buffer;
       buffer.resize(length);
       JsCopyString(string_value, buffer.data(), length, nullptr);
-      return std::move(buffer);
+      return buffer;
     }
 
     JsModuleRecord resolve_module_specifier(
@@ -473,7 +504,9 @@ namespace js {
       if (err) {
         info->state = ModuleState::error;
         // TODO: Is this necessary?
-        JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, err);
+        // JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, err);
+        // TODO: Where does the error get surfaced? Does it get surfaced
+        // during evaluation?
       } else {
         info->state = ModuleState::initializing;
       }
@@ -491,6 +524,7 @@ namespace js {
 			if (has_error) {
         Var err;
 				JsGetAndClearException(&err);
+        // TODO: Is this necessary?
 				JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, err);
         info->state = ModuleState::error;
 			} else {
@@ -586,7 +620,7 @@ namespace js {
         return nullptr;
       });
 
-      return std::move(realm);
+      return realm;
     }
 
     void flush_job_queue() {
@@ -687,6 +721,17 @@ namespace js {
   template<typename F>
   Var enter_current_realm(F fn) {
     return Realm::enter_current(fn);
+  }
+
+  template<typename F>
+  Var native_call(F fn) {
+    return Realm::enter_current([&](auto api) {
+      try {
+        return fn(api);
+      } catch (const ScriptError&) {
+        return api.undefined();
+      }
+    });
   }
 
 }

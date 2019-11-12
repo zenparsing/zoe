@@ -20,7 +20,7 @@
       const url = sys.resolveFilePath(sys.args[1], sys.cwd());
       return import(url).then(ns => {
         if (typeof ns.main === 'function') {
-          ns.main();
+          ns.main(sys);
         }
       });
     }

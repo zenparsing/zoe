@@ -13,7 +13,7 @@ namespace {
     unsigned short arg_count,
     js::Var data)
   {
-    return js::enter_current_realm([=](auto api) {
+    return js::native_call([=](auto api) {
       for (unsigned i = 1; i < arg_count; ++i) {
         std::cout << api.utf8_string(args[i]);
       }
@@ -28,7 +28,7 @@ namespace {
     unsigned short arg_count,
     js::Var data)
   {
-    return js::enter_current_realm([=](auto api) {
+    return js::native_call([=](auto api) {
       if (arg_count < 3) {
         // TODO: Throw
         return api.undefined();
@@ -51,7 +51,7 @@ namespace {
     unsigned short arg_count,
     js::Var data)
   {
-    return js::enter_current_realm([=](auto api) {
+    return js::native_call([=](auto api) {
       if (arg_count < 2) {
         // TODO: Throw
         return api.undefined();
@@ -72,7 +72,7 @@ namespace {
     unsigned short arg_count,
     js::Var data)
   {
-    return js::enter_current_realm([=](auto api) {
+    return js::native_call([=](auto api) {
       auto url_info = URLInfo::from_file_path(fs::cwd() + "/");
       return api.create_string(URLInfo::stringify(url_info));
     });
@@ -85,7 +85,7 @@ namespace {
     unsigned short arg_count,
     js::Var data)
   {
-    return js::enter_current_realm([=](auto api) {
+    return js::native_call([=](auto api) {
       if (arg_count < 3) {
         // TODO: Throw
         return api.undefined();

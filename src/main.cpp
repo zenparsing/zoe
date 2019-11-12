@@ -4,25 +4,61 @@
 #include "sys_object.h"
 #include "main.js.h"
 
+template<typename T>
+void print_error(T& out, js::RealmAPI& api) {
+  auto info = api.pop_error_info();
+  auto exception = api.get_property(info, "exception");
+  auto stack_string = api.get_property(exception, "stack");
+  auto url_string = api.get_property(info, "url");
+  auto line = api.get_property(info, "line");
+  auto column = api.get_property(info, "column");
+  auto source = api.get_property(info, "source");
+
+  if (stack_string == api.undefined()) {
+    stack_string = api.get_property(exception, "message");
+  }
+
+  out
+    << api.utf8_string(stack_string) << "\n\n"
+    << "[" << api.utf8_string(url_string)
+    << ":" << api.utf8_string(line)
+    << ":" << api.utf8_string(column) << "]\n"
+    << api.utf8_string(source) << "\n";
+}
+
 int main(int arg_count, char** args) {
   js::Engine engine;
+  js::Realm realm = engine.create_realm();
+  bool script_error = false;
 
-  auto realm = engine.create_realm();
+  realm.enter([&](auto api) {
 
-  realm.enter([=](auto api) {
-    auto sys = sys_object::create(api, arg_count, args);
-    auto source = api.create_string(main_js);
-    auto result = api.eval(source, "zoe:main");
-    auto callbacks = api.call_function(result, {api.undefined(), sys});
+    try {
 
-    auto load_module = api.get_property(callbacks, "loadModule");
-    api.set_module_load_callback(load_module);
+      auto sys = sys_object::create(api, arg_count, args);
+      auto source = api.create_string(main_js);
+      auto result = api.eval(source, "zoe:main");
+      auto callbacks = api.call_function(result, {api.undefined(), sys});
 
-    auto main_func = api.get_property(callbacks, "main");
-    return api.call_function(main_func, {api.undefined()});
+      auto load_module = api.get_property(callbacks, "loadModule");
+      api.set_module_load_callback(load_module);
+
+      auto main_func = api.get_property(callbacks, "main");
+      auto main_result = api.call_function(main_func, {api.undefined()});
+
+      engine.flush_job_queue();
+
+    } catch (const js::ScriptError&) {
+
+      script_error = true;
+      print_error(std::cout, api);
+
+    }
+
+    return nullptr;
+
   });
 
-  engine.flush_job_queue();
-
-  return 0;
+  // TODO: Unique error codes?
+  return script_error ? 0 : 1;
 }
