@@ -11,6 +11,9 @@
   }
 
   function loadModule(url) {
+    // TODO: We need a way to report if module loading fails
+    // for some reason (setModuleError?). Or do we make this
+    // an async function instead (and get rid of setModuleSource)?
     sys.setModuleSource(url, sys.readTextFileSync(url));
   }
 

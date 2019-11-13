@@ -131,7 +131,9 @@ namespace js {
   struct JobQueue {
     std::list<Job> _queue;
 
-    bool empty() const { return _queue.empty(); }
+    bool empty() const {
+      return _queue.empty();
+    }
 
     void enqueue(Job&& job) {
       _queue.push_back(std::move(job));
@@ -142,6 +144,9 @@ namespace js {
       _queue.pop_front();
       return job;
     }
+
+    void flush();
+
   };
 
   struct RealmInfo {
@@ -160,12 +165,7 @@ namespace js {
     JsContextRef _context;
     RealmInfo _info;
 
-    explicit Realm(JsContextRef context, JobQueue* job_queue) :
-      _context {context}
-    {
-      _info.job_queue = job_queue;
-      JsSetContextData(_context, this);
-    }
+    Realm(JsRuntimeHandle runtime, JobQueue* job_queue);
 
     Realm(const Realm& other) = delete;
     Realm& operator=(const Realm& other) = delete;
@@ -242,6 +242,76 @@ namespace js {
       return fn(api);
     }
 
+    static void CHAKRA_CALLBACK enqueue_promise_callback(
+      Var func,
+      void* state)
+    {
+      enter_current([=](auto api) {
+        api.enqueue_job(Job {JobType::call, func});
+        return nullptr;
+      });
+    }
+
+    static void CHAKRA_CALLBACK rejection_tracker_callback(
+      Var promise,
+      Var reason,
+      bool handled,
+      void* state)
+    {
+      enter_current([=](auto api) {
+        // TODO
+        return nullptr;
+      });
+    }
+
+    static JsErrorCode CHAKRA_CALLBACK import_fetch_callback(
+      JsModuleRecord importer,
+      Var specifier,
+      JsModuleRecord* module)
+    {
+      *module = enter_current([=](auto api) {
+        return api.resolve_module(importer, specifier);
+      });
+      return JsNoError;
+    }
+
+    static JsErrorCode CHAKRA_CALLBACK dynamic_import_fetch_callback(
+      JsSourceContext script_id,
+      Var specifier,
+      JsModuleRecord* module)
+    {
+      *module = enter_current([=](auto api) {
+        return api.resolve_module_from_script(script_id, specifier);
+      });
+      return JsNoError;
+    }
+
+    static JsErrorCode CHAKRA_CALLBACK module_ready_callback(
+      JsModuleRecord module,
+      Var exception)
+    {
+      enter_current([=](auto api) {
+        api.enqueue_job(Job {
+          JobType::evaluate_module,
+          api.undefined(),
+          {module}
+        });
+        return nullptr;
+      });
+      return JsNoError;
+    }
+
+    static JsErrorCode CHAKRA_CALLBACK initialize_import_meta_callback(
+      JsModuleRecord module,
+      Var meta_object)
+    {
+      enter_current([=](auto api) {
+        api.initialize_import_meta(module, meta_object);
+        return nullptr;
+      });
+      return JsNoError;
+    }
+
   };
 
   struct RealmAPI {
@@ -258,6 +328,17 @@ namespace js {
         }
         throw EngineError {code};
       }
+    }
+
+    Var pop_error() {
+      bool has_exception;
+      JsHasException(&has_exception);
+      if (!has_exception) {
+        return undefined();
+      }
+      Var error;
+      JsGetAndClearException(&error);
+      return error;
     }
 
     Var pop_error_info() {
@@ -394,28 +475,57 @@ namespace js {
       return buffer;
     }
 
+    // MODULES
+
+    ModuleInfo* find_module_info(Var module) {
+      auto& module_info = _realm.info().module_info;
+      if (auto p = module_info.find(module); p != module_info.end()) {
+        return &p->second;
+      }
+      return nullptr;
+    }
+
+    Var find_module_record(const std::string& url) {
+      auto& module_map = _realm.info().module_map;
+      if (auto p = module_map.find(url); p != module_map.end()) {
+        return p->second.var();
+      } else {
+        return nullptr;
+      }
+    }
+
+    Var find_module_record(Var url_string) {
+      return find_module_record(utf8_string(url_string));
+    }
+
     JsModuleRecord resolve_module_specifier(
       Var specifier,
       const URLInfo* base_url,
       JsModuleRecord importer = nullptr)
     {
-      // TODO: handle failure to parse as URL
+      // TODO: Handle failure to parse as URL. We can assume that base_url
+      // is a valid absolute URL. What are the conditions under which it
+      // would fail? Do we need to create a module record and set the
+      // module's exception?
+
+      // Resolve the specifier
       auto url_info = URLInfo::parse(utf8_string(specifier), base_url);
       auto url = URLInfo::stringify(url_info);
       Var url_string = create_string(url);
 
-      auto& module_map = _realm._info.module_map;
-      if (auto p = module_map.find(url); p != module_map.end()) {
-        return p->second.var();
+      // Return the module if it already exists
+      if (Var module = find_module_record(url)) {
+        return module;
       }
 
+      // Create a new module record
       JsModuleRecord module;
       JsInitializeModuleRecord(importer, url_string, &module);
       JsSetModuleHostInfo(module, JsModuleHostInfo_Url, url_string);
-
-      module_map[url] = VarRef {module};
+      _realm.info().module_map[url] = VarRef {module};
       _realm.info().module_info[module].url = std::move(url_info);
 
+      // Enqueue a job to call the module load callback
       enqueue_job(Job {
         JobType::call,
         get_module_load_callback(),
@@ -426,10 +536,9 @@ namespace js {
     }
 
     JsModuleRecord resolve_module(JsModuleRecord importer, Var specifier) {
-      const URLInfo* base_url = nullptr;
-      auto& module_info = _realm._info.module_info;
-      if (auto p = module_info.find(importer); p != module_info.end()) {
-        base_url = &p->second.url;
+      URLInfo* base_url = nullptr;
+      if (auto* info = find_module_info(importer)) {
+        base_url = &info->url;
       }
       return resolve_module_specifier(specifier, base_url, importer);
     }
@@ -451,24 +560,10 @@ namespace js {
       return _realm.info().module_load_callback.var();
     }
 
-    ModuleInfo* find_module_info(Var module) {
-      auto& module_info = _realm.info().module_info;
-      if (auto p = module_info.find(module); p != module_info.end()) {
-        return &p->second;
-      }
-      return nullptr;
-    }
-
     void set_module_source(Var url_string, Var source) {
-      auto url = utf8_string(url_string);
-      auto& module_map = _realm.info().module_map;
-      auto& module_info = _realm.info().module_info;
-
-      Var module;
-      if (auto p = module_map.find(url); p != module_map.end()) {
-        module = p->second.var();
-      } else {
-        // TODO: Throw (module does not exist)
+      Var module = find_module_record(url_string);
+      if (!module) {
+        // TODO: Throw (module not found)
       }
 
       ModuleInfo* info = find_module_info(module);
@@ -484,6 +579,21 @@ namespace js {
         undefined(),
         {module}
       });
+    }
+
+    void set_module_error(Var url_string, Var error) {
+      Var module = find_module_record(url_string);
+      if (!module) {
+        // TODO: Throw (module not found)
+      }
+
+      ModuleInfo* info = find_module_info(module);
+      if (info->state != ModuleState::loading) {
+        // TODO: Throw (module not loading)
+      }
+
+      info->state = ModuleState::error;
+      JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, error);
     }
 
     void parse_module(Var module) {
@@ -518,16 +628,11 @@ namespace js {
       Var result;
       JsModuleEvaluation(module, &result);
 
-      bool has_error;
-			JsHasException(&has_error);
-
-			if (has_error) {
-        Var err;
-				JsGetAndClearException(&err);
+      if (Var error = pop_error(); error != undefined()) {
         // TODO: Is this necessary?
-				JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, err);
+        JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, error);
         info->state = ModuleState::error;
-			} else {
+      } else {
         info->state = ModuleState::complete;
       }
     }
@@ -581,147 +686,18 @@ namespace js {
     }
 
     Realm create_realm() {
-      JsContextRef context;
-      if (JsCreateContext(_runtime, &context) != JsNoError) {
-        throw EngineError {};
-      }
-
-      Realm realm {context, &_job_queue};
-
-      realm.enter([&, this](auto api) {
-        // Initialize promise callbacks
-        JsSetPromiseContinuationCallback(enqueue_promise_callback, this);
-        JsSetHostPromiseRejectionTracker(rejection_tracker_callback, this);
-
-        // Initialize module callbacks
-        JsModuleRecord module_record;
-        JsInitializeModuleRecord(nullptr, nullptr, &module_record);
-
-        JsSetModuleHostInfo(
-          module_record,
-          JsModuleHostInfo_FetchImportedModuleCallback,
-          import_fetch_callback);
-
-        JsSetModuleHostInfo(
-          module_record,
-          JsModuleHostInfo_FetchImportedModuleFromScriptCallback,
-          dynamic_import_fetch_callback);
-
-        JsSetModuleHostInfo(
-          module_record,
-          JsModuleHostInfo_NotifyModuleReadyCallback,
-          module_ready_callback);
-
-        JsSetModuleHostInfo(
-          module_record,
-          JsModuleHostInfo_InitializeImportMetaCallback,
-          initialize_import_meta_callback);
-
-        return nullptr;
-      });
-
-      return realm;
+      return Realm {_runtime, &_job_queue};
     }
 
     void flush_job_queue() {
-      while (!_job_queue.empty()) {
-        Job job = std::move(_job_queue.dequeue());
-        Realm::from_object(job.func())->enter([&](auto api) {
-          switch (job.type()) {
-            case JobType::call:
-              api.call_function(
-                job.func(),
-                job.args().empty()
-                  ? std::vector<Var> {api.undefined()}
-                  : job.args());
-              break;
-
-            case JobType::parse_module:
-              api.parse_module(job.args()[0]);
-              break;
-
-            case JobType::evaluate_module:
-              api.evaluate_module(job.args()[0]);
-              break;
-          }
-          return nullptr;
-        });
-      }
-    }
-
-    static void CHAKRA_CALLBACK enqueue_promise_callback(Var func, void* state) {
-      Engine* instance = reinterpret_cast<Engine*>(state);
-      instance->_job_queue.enqueue(Job {JobType::call, func});
-    }
-
-    static void CHAKRA_CALLBACK rejection_tracker_callback(
-      Var promise,
-      Var reason,
-      bool handled,
-      void* state)
-    {
-      Engine* instance = reinterpret_cast<Engine*>(state);
-      // TODO
-    }
-
-    static JsErrorCode CHAKRA_CALLBACK import_fetch_callback(
-      JsModuleRecord importer,
-      Var specifier,
-      JsModuleRecord* module)
-    {
-      *module = Realm::enter_current([=](auto api) {
-        return api.resolve_module(importer, specifier);
-      });
-      return JsNoError;
-    }
-
-    static JsErrorCode CHAKRA_CALLBACK dynamic_import_fetch_callback(
-      JsSourceContext script_id,
-      Var specifier,
-      JsModuleRecord* module)
-    {
-      *module = Realm::enter_current([=](auto api) {
-        return api.resolve_module_from_script(script_id, specifier);
-      });
-      return JsNoError;
-    }
-
-    static JsErrorCode CHAKRA_CALLBACK module_ready_callback(
-      JsModuleRecord module,
-      Var exception)
-    {
-      // WARN: The current realm should always be the module's realm
-      Realm::enter_current([=](auto api) {
-        api.enqueue_job(Job {
-          JobType::evaluate_module,
-          api.undefined(),
-          {module}
-        });
-        return nullptr;
-      });
-      return JsNoError;
-    }
-
-    static JsErrorCode CHAKRA_CALLBACK initialize_import_meta_callback(
-      JsModuleRecord module,
-      Var meta_object)
-    {
-      Realm::enter_current([=](auto api) {
-        api.initialize_import_meta(module, meta_object);
-        return nullptr;
-      });
-      return JsNoError;
+      _job_queue.flush();
     }
 
   };
 
   Engine create_engine();
-  Realm* current_realm();
 
-  template<typename F>
-  Var enter_current_realm(F fn) {
-    return Realm::enter_current(fn);
-  }
+  Realm* current_realm();
 
   template<typename F>
   Var native_call(F fn) {
