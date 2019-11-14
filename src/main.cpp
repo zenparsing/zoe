@@ -6,7 +6,7 @@
 
 template<typename T>
 void print_error(T& out, js::RealmAPI& api) {
-  auto info = api.pop_error_info();
+  auto info = api.pop_exception_info();
   auto exception = api.get_property(info, "exception");
   auto stack_string = api.get_property(exception, "stack");
   auto url_string = api.get_property(info, "url");
@@ -15,15 +15,27 @@ void print_error(T& out, js::RealmAPI& api) {
   auto source = api.get_property(info, "source");
 
   if (stack_string == api.undefined()) {
-    stack_string = api.get_property(exception, "message");
+    stack_string = api.to_string(exception);
   }
 
-  out
-    << api.utf8_string(stack_string) << "\n\n"
-    << "[" << api.utf8_string(url_string)
-    << ":" << api.utf8_string(line)
-    << ":" << api.utf8_string(column) << "]\n"
-    << api.utf8_string(source) << "\n";
+  out << api.utf8_string(stack_string) << "\n";
+
+  // TODO: Strangely, testing for undefined doesn't work here
+  auto source_utf8 = api.utf8_string(source);
+  if (source_utf8 != "undefined") {
+    out
+      << "\n[" << api.utf8_string(url_string)
+      << ":" << api.utf8_string(line)
+      << ":" << api.utf8_string(column) << "]\n"
+      << source_utf8 << "\n";
+
+    int col = api.to_integer(column);
+    for (int i = 0; i < col; ++i) {
+      out << " ";
+    }
+
+    out << "^\n";
+  }
 }
 
 int main(int arg_count, char** args) {

@@ -11,11 +11,8 @@ static const std::string main_js = u8R"js(
     sys.stdout('\n');
   }
 
-  function loadModule(url) {
-    // TODO: We need a way to report if module loading fails
-    // for some reason (setModuleError?). Or do we make this
-    // an async function instead (and get rid of setModuleSource)?
-    sys.setModuleSource(url, sys.readTextFileSync(url));
+  function loadModule(url, callback) {
+    callback(null, sys.readTextFileSync(url));
   }
 
   function main() {

@@ -78,23 +78,6 @@ namespace {
     });
   }
 
-  js::Var CHAKRA_CALLBACK set_module_source_callback(
-    js::Var callee,
-    bool construct,
-    js::Var* args,
-    unsigned short arg_count,
-    js::Var data)
-  {
-    return js::native_call([=](auto api) {
-      if (arg_count < 3) {
-        // TODO: Throw
-        return api.undefined();
-      }
-      api.set_module_source(args[1], args[2]);
-      return api.undefined();
-    });
-  }
-
 }
 
 js::Var sys_object::create(js::RealmAPI& api, int arg_count, char** args) {
@@ -110,9 +93,6 @@ js::Var sys_object::create(js::RealmAPI& api, int arg_count, char** args) {
 
   fn = api.create_function("cwd", cwd_callback);
   api.set_property(object, "cwd", fn);
-
-  fn = api.create_function("setModuleSource", set_module_source_callback);
-  api.set_property(object, "setModuleSource", fn);
 
   fn = api.create_function("readTextFileSync", read_text_file_sync_callback);
   api.set_property(object, "readTextFileSync", fn);

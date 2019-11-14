@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cassert>
 #include <string>
 #include <map>
 #include <list>
 #include <vector>
+#include <memory>
+#include <type_traits>
 #include <utility>
 #include <iostream> // TODO: Debug only
 
@@ -92,6 +95,8 @@ namespace js {
     call,
     parse_module,
     evaluate_module,
+    add_unhandled_rejection,
+    remove_unhandled_rejection,
   };
 
   struct Job {
@@ -144,9 +149,6 @@ namespace js {
       _queue.pop_front();
       return job;
     }
-
-    void flush();
-
   };
 
   struct RealmInfo {
@@ -155,7 +157,7 @@ namespace js {
     std::map<std::string, VarRef> module_map;
     std::map<JsModuleRecord, ModuleInfo> module_info;
     std::map<JsSourceContext, URLInfo> script_urls;
-    JobQueue* job_queue;
+    std::shared_ptr<JobQueue> job_queue;
   };
 
   // Forward
@@ -165,7 +167,7 @@ namespace js {
     JsContextRef _context;
     RealmInfo _info;
 
-    Realm(JsRuntimeHandle runtime, JobQueue* job_queue);
+    Realm(JsContextRef context, std::shared_ptr<JobQueue>& job_queue);
 
     Realm(const Realm& other) = delete;
     Realm& operator=(const Realm& other) = delete;
@@ -242,6 +244,16 @@ namespace js {
       return fn(api);
     }
 
+    template<typename F>
+    static Var native_call(F fn) {
+      RealmAPI api {*Realm::current()};
+      try {
+        return fn(api);
+      } catch (const ScriptError&) {
+        return api.undefined();
+      }
+    }
+
     static void CHAKRA_CALLBACK enqueue_promise_callback(
       Var func,
       void* state)
@@ -259,7 +271,10 @@ namespace js {
       void* state)
     {
       enter_current([=](auto api) {
-        // TODO
+        JobType job_type = handled
+          ? JobType::remove_unhandled_rejection
+          : JobType::add_unhandled_rejection;
+        api.enqueue_job(Job {job_type, promise, {reason}});
         return nullptr;
       });
     }
@@ -312,6 +327,22 @@ namespace js {
       return JsNoError;
     }
 
+    static Var CHAKRA_CALLBACK set_module_source_callback(
+      Var callee,
+      bool construct,
+      Var* args,
+      unsigned short arg_count,
+      Var data)
+    {
+      return native_call([=](auto api) {
+        if (arg_count < 2) {
+          // Throw: not enough arguments
+        }
+        api.set_module_source(data, args[1], arg_count > 2 ? args[2] : nullptr);
+        return api.undefined();
+      });
+    }
+
   };
 
   struct RealmAPI {
@@ -330,26 +361,33 @@ namespace js {
       }
     }
 
-    Var pop_error() {
-      bool has_exception;
-      JsHasException(&has_exception);
-      if (!has_exception) {
-        return undefined();
-      }
-      Var error;
-      JsGetAndClearException(&error);
-      return error;
+    void throw_exception(Var exception) {
+      JsSetException(exception);
+      throw ScriptError {};
     }
 
-    Var pop_error_info() {
+    bool has_exception() {
       bool has_exception;
       JsHasException(&has_exception);
-      if (!has_exception) {
-        return undefined();
+      return has_exception;
+    }
+
+    Var pop_exception() {
+      if (has_exception()) {
+        Var error;
+        JsGetAndClearException(&error);
+        return error;
       }
-      Var error_info;
-      JsGetAndClearExceptionWithMetadata(&error_info);
-      return error_info;
+      return undefined();
+    }
+
+    Var pop_exception_info() {
+      if (has_exception()) {
+        Var error_info;
+        JsGetAndClearExceptionWithMetadata(&error_info);
+        return error_info;
+      }
+      return undefined();
     }
 
     Var eval(Var source, const std::string& url = "") {
@@ -457,25 +495,42 @@ namespace js {
       return global;
     }
 
+    bool is_null_or_undefined(Var value) {
+      bool equal;
+      JsEquals(value, undefined(), &equal);
+      return equal;
+    }
+
     Var to_string(Var value) {
       Var result;
       JsConvertValueToString(value, &result);
       return result;
     }
 
+    template<typename I = int>
+    I to_integer(Var value) {
+      int i;
+      JsNumberToInt(value, &i);
+      return static_cast<I>(i);
+    }
+
     std::string utf8_string(Var value) {
       Var string_value = to_string(value);
       size_t length;
       JsCopyString(string_value, nullptr, 0, &length);
-      // TODO: This will pre-initialize the data to zeros. Can we get around
-      // that somehow?
+      // TODO: Can we provide a buffer without initializing?
+      // TODO: [CC] Too many conversions between CC's internal string data and UTF8
       std::string buffer;
       buffer.resize(length);
       JsCopyString(string_value, buffer.data(), length, nullptr);
       return buffer;
     }
 
-    // MODULES
+    void enqueue_job(Job& job) {
+      _realm.info().job_queue->enqueue(std::move(job));
+    }
+
+    // ## MODULES
 
     ModuleInfo* find_module_info(Var module) {
       auto& module_info = _realm.info().module_info;
@@ -525,17 +580,26 @@ namespace js {
       _realm.info().module_map[url] = VarRef {module};
       _realm.info().module_info[module].url = std::move(url_info);
 
+      // Create a finisher callback
+      Var fn = create_function(
+        "setModuleSource",
+        Realm::set_module_source_callback,
+        module);
+
       // Enqueue a job to call the module load callback
       enqueue_job(Job {
         JobType::call,
         get_module_load_callback(),
-        {undefined(), url_string}
+        {undefined(), url_string, fn}
       });
 
       return module;
     }
 
-    JsModuleRecord resolve_module(JsModuleRecord importer, Var specifier) {
+    JsModuleRecord resolve_module(
+      JsModuleRecord importer,
+      Var specifier)
+    {
       URLInfo* base_url = nullptr;
       if (auto* info = find_module_info(importer)) {
         base_url = &info->url;
@@ -543,7 +607,10 @@ namespace js {
       return resolve_module_specifier(specifier, base_url, importer);
     }
 
-    JsModuleRecord resolve_module_from_script(JsSourceContext script_id,Var specifier) {
+    JsModuleRecord resolve_module_from_script(
+      JsSourceContext script_id,
+      Var specifier)
+    {
       const URLInfo* base_url = nullptr;
       auto& script_urls = _realm._info.script_urls;
       if (auto p = script_urls.find(script_id); p != script_urls.end()) {
@@ -560,44 +627,39 @@ namespace js {
       return _realm.info().module_load_callback.var();
     }
 
-    void set_module_source(Var url_string, Var source) {
-      Var module = find_module_record(url_string);
-      if (!module) {
-        // TODO: Throw (module not found)
-      }
-
+    void set_module_source(Var module, Var error, Var source) {
       ModuleInfo* info = find_module_info(module);
+      assert(info);
       if (info->state != ModuleState::loading) {
         // TODO: Throw (module not loading)
       }
 
-      info->state = ModuleState::parsing;
-      info->source = VarRef {source};
+      if (is_null_or_undefined(error)) {
+        if (!source) {
+          source = empty_string();
+        }
 
-      enqueue_job(Job {
-        JobType::parse_module,
-        undefined(),
-        {module}
-      });
-    }
+        info->state = ModuleState::parsing;
+        info->source = VarRef {source};
 
-    void set_module_error(Var url_string, Var error) {
-      Var module = find_module_record(url_string);
-      if (!module) {
-        // TODO: Throw (module not found)
+        enqueue_job(Job {
+          JobType::parse_module,
+          undefined(),
+          {module}
+        });
+      } else {
+        info->state = ModuleState::error;
+        JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, error);
       }
-
-      ModuleInfo* info = find_module_info(module);
-      if (info->state != ModuleState::loading) {
-        // TODO: Throw (module not loading)
-      }
-
-      info->state = ModuleState::error;
-      JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, error);
     }
 
     void parse_module(Var module) {
       ModuleInfo* info = find_module_info(module);
+      assert(info);
+      if (info->state != ModuleState::parsing) {
+        // TODO: throw error
+      }
+
       auto source = utf8_string(info->source.var());
       info->source.clear();
 
@@ -613,10 +675,6 @@ namespace js {
 
       if (err) {
         info->state = ModuleState::error;
-        // TODO: Is this necessary?
-        // JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, err);
-        // TODO: Where does the error get surfaced? Does it get surfaced
-        // during evaluation?
       } else {
         info->state = ModuleState::initializing;
       }
@@ -624,17 +682,29 @@ namespace js {
 
     void evaluate_module(Var module) {
       ModuleInfo* info = find_module_info(module);
-
-      Var result;
-      JsModuleEvaluation(module, &result);
-
-      if (Var error = pop_error(); error != undefined()) {
-        // TODO: Is this necessary?
-        JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, error);
-        info->state = ModuleState::error;
-      } else {
-        info->state = ModuleState::complete;
+      assert(info);
+      if (info->state != ModuleState::initializing) {
+        // TODO: throw error
       }
+
+      info->state = ModuleState::error;
+      JsModuleEvaluation(module, nullptr);
+
+      // TODO: [CC] This error handling dance is a little weird. Why can't
+      // JsModuleEvaluation just set the exception for us?
+
+      bool errored = has_exception();
+      if (errored) {
+        throw ScriptError {};
+      }
+
+      Var error;
+      JsGetModuleHostInfo(module, JsModuleHostInfo_Exception, &error);
+      if (error) {
+        throw_exception(error);
+      }
+
+      info->state = ModuleState::complete;
     }
 
     void initialize_import_meta(Var module, Var meta_object) {
@@ -643,20 +713,17 @@ namespace js {
       set_property(meta_object, "url", url_string);
     }
 
-    void enqueue_job(Job& job) {
-      _realm.info().job_queue->enqueue(std::move(job));
-    }
-
   };
 
   struct Engine {
     JsRuntimeHandle _runtime;
-    JobQueue _job_queue;
+    std::shared_ptr<JobQueue> _job_queue;
 
     Engine() {
       if (JsCreateRuntime(JsRuntimeAttributeNone, nullptr, &_runtime) != JsNoError) {
         throw EngineError {};
       }
+      _job_queue = std::make_shared<JobQueue>();
     }
 
     Engine(const Engine& other) = delete;
@@ -664,7 +731,7 @@ namespace js {
 
     Engine(Engine&& other) {
       _runtime = other._runtime;
-      _job_queue = std::move(other._job_queue);
+      _job_queue = other._job_queue;
       other._runtime = JS_INVALID_RUNTIME_HANDLE;
     }
 
@@ -679,6 +746,7 @@ namespace js {
 
     ~Engine() {
       if (_runtime != JS_INVALID_RUNTIME_HANDLE) {
+        // TODO: What if there are still live Realms?
         JsSetCurrentContext(nullptr);
         JsDisposeRuntime(_runtime);
         _runtime = JS_INVALID_RUNTIME_HANDLE;
@@ -686,12 +754,14 @@ namespace js {
     }
 
     Realm create_realm() {
-      return Realm {_runtime, &_job_queue};
+      JsContextRef context;
+      if (JsCreateContext(_runtime, &context) != JsNoError) {
+        throw EngineError {};
+      }
+      return Realm {context, _job_queue};
     }
 
-    void flush_job_queue() {
-      _job_queue.flush();
-    }
+    void flush_job_queue();
 
   };
 
@@ -701,13 +771,7 @@ namespace js {
 
   template<typename F>
   Var native_call(F fn) {
-    return Realm::enter_current([&](auto api) {
-      try {
-        return fn(api);
-      } catch (const ScriptError&) {
-        return api.undefined();
-      }
-    });
+    return Realm::native_call(fn);
   }
 
 }
