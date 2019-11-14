@@ -6,6 +6,12 @@
 
 namespace fs {
 
+  struct UvError {
+    int code;
+    std::string name;
+    std::string message;
+  };
+
 #ifdef _WIN32
   constexpr unsigned PATH_MAX_BYTES = _MAX_PATH * 4;
 #else

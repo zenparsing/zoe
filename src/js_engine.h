@@ -252,6 +252,7 @@ namespace js {
       } catch (const ScriptError&) {
         return api.undefined();
       }
+      // TODO: Crash if other kind of error is thrown?
     }
 
     static void CHAKRA_CALLBACK enqueue_promise_callback(

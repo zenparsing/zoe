@@ -1,15 +1,24 @@
 #include "fs.h"
 #include "uv.h"
 
+#include <iostream> // Debug only
+
 namespace fs {
+
+  void throw_on_error(int code) {
+    if (code < 0) {
+      throw UvError {
+        code,
+        uv_err_name(code),
+        uv_strerror(code)
+      };
+    }
+  }
 
   std::string cwd() {
     char buffer[PATH_MAX_BYTES];
     size_t cwd_len = sizeof(buffer);
-    int err = uv_cwd(buffer, &cwd_len);
-    if (err) {
-      // TODO: handle error
-    }
+    throw_on_error(uv_cwd(buffer, &cwd_len));
     return {buffer};
   }
 
@@ -19,6 +28,7 @@ namespace fs {
     // Open file
     uv_file file = uv_fs_open(nullptr, &req, path.c_str(), O_RDONLY, 0, nullptr);
     uv_fs_req_cleanup(&req);
+    throw_on_error(file);
 
     char buffer_memory[4096];
     uv_buf_t buffer = uv_buf_init(buffer_memory, sizeof(buffer_memory));

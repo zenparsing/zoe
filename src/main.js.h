@@ -11,17 +11,27 @@ static const std::string main_js = u8R"js(
     sys.stdout('\n');
   }
 
+  let hostAPI = {
+    cwd() { return sys.cwd(); },
+    args() { return Array.from(sys.args); },
+  };
+
   function loadModule(url, callback) {
-    callback(null, sys.readTextFileSync(url));
+    try {
+      callback(null, sys.readTextFileSync(url));
+    } catch (err) {
+      callback(new Error(`Unable to load module ${ url } [${ err.code }]`));
+    }
   }
 
   function main() {
     if (sys.args.length > 1) {
       const path = sys.args[1];
+      // TODO: Handle invalid URLs?
       const url = sys.resolveFilePath(sys.args[1], sys.cwd());
       return import(url).then(ns => {
         if (typeof ns.main === 'function') {
-          ns.main(sys);
+          ns.main(hostAPI);
         }
       });
     }
