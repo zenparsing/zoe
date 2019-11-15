@@ -2,7 +2,8 @@
 
 #include <climits>
 #include <cstdlib>
-#include <string>
+
+#include "common.h"
 
 namespace fs {
 

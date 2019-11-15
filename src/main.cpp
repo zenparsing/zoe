@@ -1,5 +1,4 @@
-#include <iostream>
-#include "event_loop.h"
+#include "common.h"
 #include "js_engine.h"
 #include "sys_object.h"
 #include "main.js.h"
@@ -20,7 +19,7 @@ void print_error(T& out, js::RealmAPI& api) {
 
   out << api.utf8_string(stack_string) << "\n";
 
-  // TODO: Strangely, testing for undefined doesn't work here
+  // TODO: [CC] Testing for api.undefined doesn't work. Why?
   auto source_utf8 = api.utf8_string(source);
   if (source_utf8 != "undefined") {
     out
@@ -43,7 +42,7 @@ int main(int arg_count, char** args) {
   js::Realm realm = engine.create_realm();
   bool script_error = false;
 
-  realm.enter([&](auto api) {
+  realm.enter([&](auto& api) {
 
     try {
 
@@ -66,8 +65,6 @@ int main(int arg_count, char** args) {
       print_error(std::cout, api);
 
     }
-
-    return nullptr;
 
   });
 

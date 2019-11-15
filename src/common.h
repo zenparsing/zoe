@@ -1,5 +1,11 @@
 #pragma once
 
+#include <iostream>
+#include <cassert>
+#include <cstdint>
+#include <utility>
+#include <string>
+
 template<typename F>
 struct OnScopeExit {
   OnScopeExit(F fn) : fn(fn) {}

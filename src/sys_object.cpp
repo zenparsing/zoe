@@ -1,39 +1,35 @@
-#include <iostream>
+#include <climits>
 
+#include "common.h"
 #include "sys_object.h"
 #include "url.h"
 #include "fs.h"
 
 namespace {
 
-  js::Var CHAKRA_CALLBACK stdout_callback(
-    js::Var callee,
-    bool construct,
-    js::Var* args,
-    unsigned short arg_count,
-    js::Var data)
-  {
-    return js::native_call([=](auto api) {
-      for (unsigned i = 1; i < arg_count; ++i) {
+  using js::Var;
+  using js::RealmAPI;
+  using js::CallArgs;
+
+  struct StdOutFunc {
+    inline static std::string name = "stdout";
+    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
+      return nullptr;
+    }
+    static Var call(RealmAPI& api, CallArgs& args, Var data) {
+      for (unsigned i = 1; i < args.count; ++i) {
         std::cout << api.utf8_string(args[i]);
       }
       return api.undefined();
-    });
-  }
+    }
+  };
 
-  js::Var CHAKRA_CALLBACK resolve_file_path_callback(
-    js::Var callee,
-    bool construct,
-    js::Var* args,
-    unsigned short arg_count,
-    js::Var data)
-  {
-    return js::native_call([=](auto api) {
-      if (arg_count < 3) {
-        // TODO: Throw
-        return api.undefined();
-      }
-
+  struct ResolveFilePathFunc {
+    inline static std::string name = "resolveFilePath";
+    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
+      return nullptr;
+    }
+    static Var call(RealmAPI& api, CallArgs& args, Var data) {
       auto path = api.utf8_string(args[1]);
       auto base = api.utf8_string(args[2]);
 
@@ -41,70 +37,75 @@ namespace {
       auto base_url = URLInfo::parse(base);
       auto info = URLInfo::from_file_path(path, &base_url);
       return api.create_string(URLInfo::stringify(info));
-    });
-  }
+    }
+  };
 
-  js::Var CHAKRA_CALLBACK read_text_file_sync_callback(
-    js::Var callee,
-    bool construct,
-    js::Var* args,
-    unsigned short arg_count,
-    js::Var data)
-  {
-    return js::native_call([=](auto api) {
-      if (arg_count < 2) {
-        // TODO: Throw
-        return api.undefined();
-      }
-
+  struct ReadTextFileSyncFunc {
+    inline static std::string name = "readTextFileSync";
+    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
+      return nullptr;
+    }
+    static Var call(RealmAPI& api, CallArgs& args, Var data) {
       auto url_string = api.utf8_string(args[1]);
       URLInfo url = URLInfo::parse(url_string);
       auto path = URLInfo::to_file_path(url);
       auto content = fs::read_text_file_sync(path);
       return api.create_string(content);
-    });
-  }
+    }
+  };
 
-  js::Var CHAKRA_CALLBACK cwd_callback(
-    js::Var callee,
-    bool construct,
-    js::Var* args,
-    unsigned short arg_count,
-    js::Var data)
-  {
-    return js::native_call([=](auto api) {
+  struct CwdFunc {
+    inline static std::string name = "cwd";
+    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
+      return nullptr;
+    }
+    static Var call(RealmAPI& api, CallArgs& args, Var data) {
       auto url_info = URLInfo::from_file_path(fs::cwd() + "/");
       return api.create_string(URLInfo::stringify(url_info));
-    });
+    }
+  };
+
+  struct ObjectBuilder {
+    RealmAPI& _api;
+    Var _object;
+
+    ObjectBuilder(RealmAPI& api) : _api {api} {
+      _object = _api.create_object();
+    }
+
+    Var object() { return _object; }
+
+    template<typename T>
+    void add_method() {
+      auto fn = _api.create_function<T>();
+      _api.set_property(_object, T::name, fn);
+    }
+
+    void add_property(const std::string& name, Var value) {
+      _api.set_property(_object, name, value);
+    }
+  };
+
+  Var create_args(RealmAPI& api, int arg_count, char** args) {
+    auto args_array = api.create_array(arg_count);
+    for (int i = 0; i < arg_count; ++i) {
+      auto str = api.create_string(args[i]);
+      api.set_indexed_property(args_array, i, str);
+    }
+    return args_array;
   }
 
 }
 
-js::Var sys_object::create(js::RealmAPI& api, int arg_count, char** args) {
-  js::Var object = api.create_object();
+Var sys_object::create(RealmAPI& api, int arg_count, char** args) {
+  ObjectBuilder builder {api};
 
-  js::Var fn;
+  builder.add_property("args", create_args(api, arg_count, args));
+  builder.add_property("global", api.global_object());
+  builder.add_method<StdOutFunc>();
+  builder.add_method<ResolveFilePathFunc>();
+  builder.add_method<CwdFunc>();
+  builder.add_method<ReadTextFileSyncFunc>();
 
-  fn = api.create_function("stdout", stdout_callback);
-  api.set_property(object, "stdout", fn);
-
-  fn = api.create_function("resolveFilePath", resolve_file_path_callback);
-  api.set_property(object, "resolveFilePath", fn);
-
-  fn = api.create_function("cwd", cwd_callback);
-  api.set_property(object, "cwd", fn);
-
-  fn = api.create_function("readTextFileSync", read_text_file_sync_callback);
-  api.set_property(object, "readTextFileSync", fn);
-
-  auto args_array = api.create_array(arg_count);
-  for (int i = 0; i < arg_count; ++i) {
-    auto str = api.create_string(args[i]);
-    api.set_indexed_property(args_array, i, str);
-  }
-  api.set_property(object, "args", args_array);
-
-  api.set_property(object, "global", api.global_object());
-
-  return object;
+  return builder.object();
 }

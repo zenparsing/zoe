@@ -1,8 +1,6 @@
 #include "fs.h"
 #include "uv.h"
 
-#include <iostream> // Debug only
-
 namespace fs {
 
   void throw_on_error(int code) {
