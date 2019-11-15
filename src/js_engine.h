@@ -68,9 +68,7 @@ namespace js {
     JsErrorCode code;
   };
 
-  struct ScriptError {
-    JsErrorCode code = JsNoError;
-  };
+  struct ScriptError {};
 
   enum class ModuleState {
     loading,
@@ -86,7 +84,7 @@ namespace js {
     VarRef source;
   };
 
-  enum class JobType {
+  enum class JobKind {
     call,
     parse_module,
     evaluate_module,
@@ -95,14 +93,14 @@ namespace js {
   };
 
   struct Job {
-    JobType _type;
+    JobKind _kind;
     VarRef _func;
     std::vector<Var> _args;
 
-    Job(JobType type, Var func) : _type {type}, _func {func} {}
+    Job(JobKind kind, Var func) : _kind {kind}, _func {func} {}
 
-    Job(JobType type, Var func, std::vector<Var>&& args) :
-      _type {type},
+    Job(JobKind kind, Var func, std::vector<Var>&& args) :
+      _kind {kind},
       _func {func},
       _args {args}
     {
@@ -123,7 +121,7 @@ namespace js {
       }
     }
 
-    const JobType type() const { return _type; }
+    const JobKind kind() const { return _kind; }
     const Var func() const { return _func.var(); }
     const std::vector<Var>& args() const { return _args; }
   };
@@ -164,25 +162,29 @@ namespace js {
     unsigned short arg_count,
     void* data);
 
+  inline void _checked(JsErrorCode code) {
+    if (code != JsNoError) {
+      bool has_exception;
+      JsHasException(&has_exception);
+      if (has_exception) {
+        throw ScriptError {};
+      }
+      throw EngineError {code};
+    }
+  }
+
   struct RealmAPI {
     RealmInfo& _realm_info;
 
     explicit RealmAPI(RealmInfo& realm_info) : _realm_info {realm_info} {}
 
-    void throw_on_error(JsErrorCode code) {
-      if (code != JsNoError) {
-        bool has_exception;
-        JsHasException(&has_exception);
-        if (has_exception) {
-          throw ScriptError {code};
-        }
-        throw EngineError {code};
-      }
+    void throw_exception(Var error) {
+      set_exception(error);
+      throw ScriptError {};
     }
 
-    void throw_exception(Var exception) {
-      JsSetException(exception);
-      throw ScriptError {};
+    void set_exception(Var error) {
+      JsSetException(error);
     }
 
     bool has_exception() {
@@ -213,9 +215,7 @@ namespace js {
       auto id = _realm_info.next_script_id++;
       _realm_info.script_urls[id] = URLInfo::parse(url);
       Var result;
-      throw_on_error(
-        JsRun(source, id, create_string(url), JsParseScriptAttributeNone, &result)
-      );
+      _checked(JsRun(source, id, create_string(url), JsParseScriptAttributeNone, &result));
       return result;
     }
 
@@ -235,6 +235,19 @@ namespace js {
     Var create_object() {
       Var result;
       JsCreateObject(&result);
+      return result;
+    }
+
+    Var construct(Var fn, const std::vector<Var>& args = {}) {
+      Var result;
+      if (args.empty()) {
+        Var arg = undefined();
+        JsConstructObject(fn, &arg, 1, &result);
+      } else {
+        Var* args_ptr = const_cast<Var*>(args.data());
+        auto count = static_cast<unsigned short>(args.size());
+        JsConstructObject(fn, args_ptr, count, &result);
+      }
       return result;
     }
 
@@ -411,7 +424,7 @@ namespace js {
 
     void parse_module(Var module);
 
-    void evaluate_module(Var module);
+    void evaluate_module(Var module, Var error);
 
     void initialize_import_meta(Var module, Var meta_object) {
       Var url_string;
@@ -527,14 +540,27 @@ namespace js {
   {
     RealmAPI api {Realm::current()->info()};
     CallArgs call_args {callee, args, arg_count, api.undefined()};
+
     try {
       return construct
         ? T::construct(api, call_args, data)
         : T::call(api, call_args, data);
     } catch (const ScriptError&) {
-      // TODO: Crash if another kind of error is thrown?
-      return api.undefined();
+      return nullptr;
+    } catch (const HostError& error) {
+      // Convert HostErrors to JS exceptions
+      auto global = api.global_object();
+      auto ctor = api.get_property(global, "Error");
+      auto err = api.construct(ctor, {
+        api.undefined(),
+        api.create_string(error.message),
+      });
+      api.set_property(err, "code", api.create_string(error.code));
+      api.set_exception(err);
+      return nullptr;
     }
+
+    // TODO: Crash if another kind of error is thrown?
   }
 
   struct Engine {

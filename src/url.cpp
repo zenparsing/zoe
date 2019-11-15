@@ -703,7 +703,7 @@ namespace {
     return true;
   }
 
-  enum class HostType {
+  enum class HostKind {
     failed,
     domain,
     ipv4,
@@ -712,7 +712,7 @@ namespace {
   };
 
   struct HostInfo {
-    HostType type;
+    HostKind kind;
     uint32_t ipv4;
     std::array<uint16_t, 8> ipv6;
     std::string domain_or_opaque;
@@ -847,7 +847,7 @@ namespace {
       return;
     }
 
-    info.type = HostType::ipv6;
+    info.kind = HostKind::ipv6;
   }
 
   int64_t parse_number(const char* start, const char* end) {
@@ -936,7 +936,7 @@ namespace {
       return true;
     }
 
-    info.type = HostType::ipv4;
+    info.kind = HostKind::ipv4;
     uint32_t val = static_cast<uint32_t>(numbers[parts - 1]);
     for (int n = 0; n < parts - 1; n++) {
       double b = 3 - n;
@@ -958,7 +958,7 @@ namespace {
         append_or_escape(&output, ch, C0_CONTROL_ENCODE_SET);
       }
     }
-    info.type = HostType::opaque;
+    info.kind = HostKind::opaque;
     info.domain_or_opaque = std::move(output);
   }
 
@@ -969,7 +969,7 @@ namespace {
     bool is_special,
     bool unicode)
   {
-    info.type = HostType::failed;
+    info.kind = HostKind::failed;
     const char* pointer = input;
 
     if (length == 0) {
@@ -1014,7 +1014,7 @@ namespace {
     }
 
     // It's not an IPv4 or IPv6 address, it must be a domain
-    info.type = HostType::domain;
+    info.kind = HostKind::domain;
     info.domain_or_opaque = std::move(decoded);
   }
 
@@ -1051,11 +1051,11 @@ namespace {
   }
 
   std::string stringify_host(const HostInfo& info) {
-    if (info.type == HostType::domain || info.type == HostType::opaque) {
+    if (info.kind == HostKind::domain || info.kind == HostKind::opaque) {
       return info.domain_or_opaque;
     }
 
-    if (info.type == HostType::ipv4) {
+    if (info.kind == HostKind::ipv4) {
       std::string dest;
       dest.reserve(15);
       uint32_t value = info.ipv4;
@@ -1071,7 +1071,7 @@ namespace {
       return dest;
     }
 
-    if (info.type == HostType::ipv6) {
+    if (info.kind == HostKind::ipv6) {
       std::string dest;
       dest.reserve(41);
       dest += '[';
@@ -1116,7 +1116,7 @@ namespace {
     }
     HostInfo info;
     parse_host(info, input.c_str(), input.length(), is_special, unicode);
-    if (info.type == HostType::failed) {
+    if (info.kind == HostKind::failed) {
       return false;
     }
     *output = std::move(stringify_host(info));

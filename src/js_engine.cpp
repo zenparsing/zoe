@@ -8,7 +8,7 @@ namespace {
     void* state)
   {
     Realm::enter_current([=](auto& api) {
-      api.enqueue_job(Job {JobType::call, func});
+      api.enqueue_job(Job {JobKind::call, func});
     });
   }
 
@@ -19,9 +19,9 @@ namespace {
     void* state)
   {
     Realm::enter_current([=](auto& api) {
-      JobType job_type = handled
-        ? JobType::remove_unhandled_rejection
-        : JobType::add_unhandled_rejection;
+      JobKind job_type = handled
+        ? JobKind::remove_unhandled_rejection
+        : JobKind::add_unhandled_rejection;
       api.enqueue_job(Job {job_type, promise, {reason}});
     });
   }
@@ -54,9 +54,9 @@ namespace {
   {
     Realm::enter_current([=](auto& api) {
       api.enqueue_job(Job {
-        JobType::evaluate_module,
+        JobKind::evaluate_module,
         api.undefined(),
-        {module}
+        {module, exception},
       });
     });
     return JsNoError;
@@ -79,7 +79,7 @@ namespace {
     }
     static Var call(RealmAPI& api, CallArgs& args, Var data) {
       api.set_module_source(data, args[1], args[2]);
-      return api.undefined();
+      return nullptr;
     }
   };
 }
@@ -157,9 +157,9 @@ namespace js {
 
     // Enqueue a job to call the module load callback
     enqueue_job(Job {
-      JobType::call,
+      JobKind::call,
       get_module_load_callback(),
-      {undefined(), url_string, fn}
+      {undefined(), url_string, fn},
     });
 
     return module;
@@ -173,17 +173,18 @@ namespace js {
     }
 
     if (is_null_or_undefined(error)) {
-      info->state = ModuleState::parsing;
       info->source = VarRef {source};
-      enqueue_job(Job {
-        JobType::parse_module,
-        undefined(),
-        {module}
-      });
     } else {
-      info->state = ModuleState::error;
+      info->source = VarRef {empty_string()};
       JsSetModuleHostInfo(module, JsModuleHostInfo_Exception, error);
     }
+
+    info->state = ModuleState::parsing;
+    enqueue_job(Job {
+      JobKind::parse_module,
+      undefined(),
+      {module},
+    });
   }
 
   void RealmAPI::parse_module(Var module) {
@@ -213,28 +214,23 @@ namespace js {
     }
   }
 
-  void RealmAPI::evaluate_module(Var module) {
+  void RealmAPI::evaluate_module(Var module, Var error) {
+    if (error) {
+      throw_exception(error);
+    }
+
     ModuleInfo* info = find_module_info(module);
     assert(info);
     if (info->state != ModuleState::initializing) {
       // TODO: throw error
     }
 
-    info->state = ModuleState::error;
     JsModuleEvaluation(module, nullptr);
-
-    // TODO: [CC] This error handling dance is a little weird. Why can't
-    // JsModuleEvaluation just set the exception for us?
 
     bool errored = has_exception();
     if (errored) {
+      info->state = ModuleState::error;
       throw ScriptError {};
-    }
-
-    Var error;
-    JsGetModuleHostInfo(module, JsModuleHostInfo_Exception, &error);
-    if (error) {
-      throw_exception(error);
     }
 
     info->state = ModuleState::complete;
@@ -249,8 +245,8 @@ namespace js {
       auto func = job.func();
       assert(func);
       Realm::from_object(func)->enter([&](auto& api) {
-        switch (job.type()) {
-          case JobType::call: {
+        switch (job.kind()) {
+          case JobKind::call: {
             if (job.args().empty()) {
               api.call_function(func, {api.undefined()});
             } else {
@@ -259,25 +255,26 @@ namespace js {
             break;
           }
 
-          case JobType::parse_module: {
+          case JobKind::parse_module: {
             auto module = job.args()[0];
             api.parse_module(module);
             break;
           }
 
-          case JobType::evaluate_module: {
+          case JobKind::evaluate_module: {
             auto module = job.args()[0];
-            api.evaluate_module(module);
+            auto error = job.args()[1];
+            api.evaluate_module(module, error);
             break;
           }
 
-          case JobType::add_unhandled_rejection: {
+          case JobKind::add_unhandled_rejection: {
             rejections.push_back(func);
             rejection_reasons[func] = job.args()[0];
             break;
           }
 
-          case JobType::remove_unhandled_rejection: {
+          case JobKind::remove_unhandled_rejection: {
             rejection_reasons.erase(func);
             break;
           }

@@ -1,14 +1,25 @@
-#include "fs.h"
+#include <utility>
+#include <string>
+#include <climits>
+#include <cstdlib>
+
 #include "uv.h"
+#include "fs.h"
 
 namespace fs {
 
-  void throw_on_error(int code) {
+#ifdef _WIN32
+  constexpr unsigned PATH_MAX_BYTES = _MAX_PATH * 4;
+#else
+  constexpr unsigned PATH_MAX_BYTES = PATH_MAX;
+#endif
+
+  inline void _check_uv(int code) {
     if (code < 0) {
-      throw UvError {
-        code,
+      throw HostError {
+        HostErrorKind::libuv,
+        uv_strerror(code),
         uv_err_name(code),
-        uv_strerror(code)
       };
     }
   }
@@ -16,7 +27,7 @@ namespace fs {
   std::string cwd() {
     char buffer[PATH_MAX_BYTES];
     size_t cwd_len = sizeof(buffer);
-    throw_on_error(uv_cwd(buffer, &cwd_len));
+    _check_uv(uv_cwd(buffer, &cwd_len));
     return {buffer};
   }
 
@@ -26,22 +37,25 @@ namespace fs {
     // Open file
     uv_file file = uv_fs_open(nullptr, &req, path.c_str(), O_RDONLY, 0, nullptr);
     uv_fs_req_cleanup(&req);
-    throw_on_error(file);
+    _check_uv(file);
 
     char buffer_memory[4096];
     uv_buf_t buffer = uv_buf_init(buffer_memory, sizeof(buffer_memory));
     std::string str;
 
+    int bytes;
     while (true) {
       // Read into buffer
-      int r = uv_fs_read(nullptr, &req, file, &buffer, 1, str.length(), nullptr);
+      bytes = uv_fs_read(nullptr, &req, file, &buffer, 1, str.length(), nullptr);
       uv_fs_req_cleanup(&req);
-      if (r > 0) {
-        str.append(buffer.base, r);
+      if (bytes > 0) {
+        str.append(buffer.base, bytes);
       } else {
         break;
       }
     }
+
+    _check_uv(bytes);
 
     // Close file
     uv_fs_close(nullptr, &req, file, nullptr);
