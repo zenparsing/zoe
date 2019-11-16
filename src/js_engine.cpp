@@ -72,11 +72,8 @@ namespace {
     return JsNoError;
   }
 
-  struct SetModuleSourceFunc {
+  struct SetModuleSourceFunc : public NativeFunc {
     inline static std::string name = "setModuleSource";
-    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
-      return nullptr;
-    }
     static Var call(RealmAPI& api, CallArgs& args, Var data) {
       api.set_module_source(data, args[1], args[2]);
       return nullptr;

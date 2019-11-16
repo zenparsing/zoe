@@ -223,11 +223,11 @@ namespace js {
       Var result;
       if (args.empty()) {
         Var arg = undefined();
-        JsCallFunction(fn, &arg, 1, &result);
+        _checked(JsCallFunction(fn, &arg, 1, &result));
       } else {
         Var* args_ptr = const_cast<Var*>(args.data());
         auto count = static_cast<unsigned short>(args.size());
-        JsCallFunction(fn, args_ptr, count, &result);
+        _checked(JsCallFunction(fn, args_ptr, count, &result));
       }
       return result;
     }
@@ -242,13 +242,17 @@ namespace js {
       Var result;
       if (args.empty()) {
         Var arg = undefined();
-        JsConstructObject(fn, &arg, 1, &result);
+        _checked(JsConstructObject(fn, &arg, 1, &result));
       } else {
         Var* args_ptr = const_cast<Var*>(args.data());
         auto count = static_cast<unsigned short>(args.size());
-        JsConstructObject(fn, args_ptr, count, &result);
+        _checked(JsConstructObject(fn, args_ptr, count, &result));
       }
       return result;
+    }
+
+    Var global_property(const std::string& name) {
+      return get_property(global_object(), name);
     }
 
     Var create_array(unsigned length = 0) {
@@ -275,7 +279,7 @@ namespace js {
 
     Var create_string(const char* buffer, size_t length) {
       Var value;
-      JsCreateString(buffer, length, &value);
+      _checked(JsCreateString(buffer, length, &value));
       return value;
     }
 
@@ -292,22 +296,22 @@ namespace js {
       auto name = create_string(T::name);
       JsNativeFunction native_func = native_func_callback<T>;
       Var func;
-      JsCreateNamedFunction(name, native_func, hidden, &func);
+      _checked(JsCreateNamedFunction(name, native_func, hidden, &func));
       return func;
     }
 
     Var get_property(Var object, const std::string& name) {
       Var result;
-      JsGetProperty(object, create_property_id(name), &result);
+      _checked(JsGetProperty(object, create_property_id(name), &result));
       return result;
     }
 
     void set_property(Var object, const std::string& name, Var value) {
-      JsSetProperty(object, create_property_id(name), value, true);
+      _checked(JsSetProperty(object, create_property_id(name), value, true));
     }
 
     void set_indexed_property(Var object, Var index, Var value) {
-      JsSetIndexedProperty(object, index, value);
+      _checked(JsSetIndexedProperty(object, index, value));
     }
 
     void set_indexed_property(Var object, int index, Var value) {
@@ -328,32 +332,32 @@ namespace js {
 
     bool is_null_or_undefined(Var value) {
       bool equal;
-      JsEquals(value, undefined(), &equal);
+      _checked(JsEquals(value, undefined(), &equal));
       return equal;
     }
 
     Var to_string(Var value) {
       Var result;
-      JsConvertValueToString(value, &result);
+      _checked(JsConvertValueToString(value, &result));
       return result;
     }
 
     template<typename I = int>
     I to_integer(Var value) {
       int i;
-      JsNumberToInt(value, &i);
+      _checked(JsNumberToInt(value, &i));
       return static_cast<I>(i);
     }
 
     std::string utf8_string(Var value) {
       Var string_value = to_string(value);
       size_t length;
-      JsCopyString(string_value, nullptr, 0, &length);
+      _checked(JsCopyString(string_value, nullptr, 0, &length));
       // TODO: Can we provide a buffer without initializing?
       // TODO: [CC] Too many conversions between CC's internal string data and UTF8
       std::string buffer;
       buffer.resize(length);
-      JsCopyString(string_value, buffer.data(), length, nullptr);
+      _checked(JsCopyString(string_value, buffer.data(), length, nullptr));
       return buffer;
     }
 
@@ -530,6 +534,28 @@ namespace js {
     }
   };
 
+  struct NativeFunc {
+    inline static std::string name = "";
+
+    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
+      auto err = api.construct(api.global_property("TypeError"), {
+        api.undefined(),
+        api.create_string("Function is not a constructor"),
+      });
+      api.set_exception(err);
+      return nullptr;
+    }
+
+    static Var call(RealmAPI& api, CallArgs& args, Var data) {
+      auto err = api.construct(api.global_property("TypeError"), {
+        api.undefined(),
+        api.create_string("Constructor cannot be called without the new keyword"),
+      });
+      api.set_exception(err);
+      return nullptr;
+    }
+  };
+
   template<typename T>
   Var CHAKRA_CALLBACK native_func_callback(
     Var callee,
@@ -549,9 +575,7 @@ namespace js {
       return nullptr;
     } catch (const HostError& error) {
       // Convert HostErrors to JS exceptions
-      auto global = api.global_object();
-      auto ctor = api.get_property(global, "Error");
-      auto err = api.construct(ctor, {
+      auto err = api.construct(api.global_property("Error"), {
         api.undefined(),
         api.create_string(error.message),
       });

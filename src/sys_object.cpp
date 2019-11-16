@@ -10,12 +10,10 @@ namespace {
   using js::Var;
   using js::RealmAPI;
   using js::CallArgs;
+  using js::NativeFunc;
 
-  struct StdOutFunc {
+  struct StdOutFunc : public NativeFunc {
     inline static std::string name = "stdout";
-    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
-      return nullptr;
-    }
     static Var call(RealmAPI& api, CallArgs& args, Var data) {
       for (unsigned i = 1; i < args.count; ++i) {
         std::cout << api.utf8_string(args[i]);
@@ -24,11 +22,8 @@ namespace {
     }
   };
 
-  struct ResolveFilePathFunc {
+  struct ResolveFilePathFunc : public NativeFunc {
     inline static std::string name = "resolveFilePath";
-    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
-      return nullptr;
-    }
     static Var call(RealmAPI& api, CallArgs& args, Var data) {
       auto path = api.utf8_string(args[1]);
       auto base = api.utf8_string(args[2]);
@@ -40,11 +35,8 @@ namespace {
     }
   };
 
-  struct ReadTextFileSyncFunc {
+  struct ReadTextFileSyncFunc : public NativeFunc {
     inline static std::string name = "readTextFileSync";
-    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
-      return nullptr;
-    }
     static Var call(RealmAPI& api, CallArgs& args, Var data) {
       auto url_string = api.utf8_string(args[1]);
       URLInfo url = URLInfo::parse(url_string);
@@ -54,11 +46,8 @@ namespace {
     }
   };
 
-  struct CwdFunc {
+  struct CwdFunc : public NativeFunc {
     inline static std::string name = "cwd";
-    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
-      return nullptr;
-    }
     static Var call(RealmAPI& api, CallArgs& args, Var data) {
       auto url_info = URLInfo::from_file_path(fs::cwd() + "/");
       return api.create_string(URLInfo::stringify(url_info));
