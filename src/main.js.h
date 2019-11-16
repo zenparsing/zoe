@@ -20,7 +20,7 @@ static const std::string main_js = u8R"js(
     try {
       callback(null, sys.readTextFileSync(url));
     } catch (err) {
-      callback(new Error(`Unable to load module (${ url }) - ${ err.message }`));
+      callback(new Error(`Unable to load module (${ url })`));
     }
   }
 
