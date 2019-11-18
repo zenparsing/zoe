@@ -5,8 +5,6 @@
 #include <vector>
 #include <memory>
 
-#include "ChakraCore.h"
-
 #include "common.h"
 #include "url.h"
 
@@ -27,8 +25,18 @@ namespace js {
       }
     }
 
-    VarRef(const VarRef& other) = delete;
-    VarRef& operator=(const VarRef& other) = delete;
+    VarRef(const VarRef& other) : _ref {other._ref} {
+      if (_ref) {
+        JsAddRef(_ref, nullptr);
+      }
+    }
+
+    VarRef& operator=(const VarRef& other) {
+      if (this != &other) {
+        _ref = other._ref;
+        JsAddRef(_ref, nullptr);
+      }
+    }
 
     VarRef(VarRef&& other) : _ref {other._ref} {
       other._ref = nullptr;
@@ -102,7 +110,7 @@ namespace js {
     Job(JobKind kind, Var func, std::vector<Var>&& args) :
       _kind {kind},
       _func {func},
-      _args {args}
+      _args {args} // TODO: Copy/move??
     {
       for (Var arg : args) {
         JsAddRef(arg, nullptr);
@@ -142,6 +150,8 @@ namespace js {
       _queue.pop_front();
       return job;
     }
+
+    void flush();
   };
 
   struct RealmInfo {
@@ -375,6 +385,22 @@ namespace js {
 
     void enqueue_job(Job& job) {
       _realm_info.job_queue->enqueue(std::move(job));
+    }
+
+    void enqueue_job(Var func, std::vector<Var>&& args) {
+      _realm_info.job_queue->enqueue(Job {
+        JobKind::call,
+        func,
+        std::move(args),
+      });
+    }
+
+    void enqueue_job(Var func) {
+      _realm_info.job_queue->enqueue(Job {JobKind::call, func});
+    }
+
+    void flush_job_queue() {
+      _realm_info.job_queue->flush();
     }
 
     // ## MODULES
@@ -643,7 +669,9 @@ namespace js {
       return Realm {context, _job_queue};
     }
 
-    void flush_job_queue();
+    void flush_job_queue() {
+      _job_queue->flush();
+    }
 
   };
 

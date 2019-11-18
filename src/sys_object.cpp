@@ -2,10 +2,12 @@
 #include "os.h"
 #include "url.h"
 #include "sys_object.h"
+#include "event_loop.h"
 
 namespace {
 
   using js::Var;
+  using js::VarRef;
   using js::RealmAPI;
   using js::CallArgs;
   using js::NativeFunc;
@@ -61,6 +63,24 @@ namespace {
     static Var call(RealmAPI& api, CallArgs& args) {
       auto url_string = api.utf8_string(args[1]);
       auto path = url_to_file_path(url_string);
+      auto callback = VarRef {args[2]};
+      // TODO: This results in a bunch of unnecessary VarRef copies.
+      // We really only need to have one VarRef. Also, the only
+      // interesting thing we're going to do here is map the result
+      // object (DirectoryHandle here) into a JS object. The common
+      // stuff should be factored out. And maybe after that we don't
+      // really need the template lambda callbacks after all.
+      os::open_directory(path, [=](os::DirectoryHandle dir) {
+        js::Realm::from_object(callback.var())->enter([&](auto& api) {
+          // TODO: Wrap the result
+          event_loop::dispatch_event(callback.var(), api.create_object());
+        });
+      }, [=](HostError& error) {
+        js::Realm::from_object(callback.var())->enter([&](auto& api) {
+          // TODO: Wrap the error
+          event_loop::dispatch_event(callback.var(), api.create_object());
+        });
+      });
       return nullptr;
     }
   };

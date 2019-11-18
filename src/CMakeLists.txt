@@ -22,6 +22,7 @@ add_executable(
   os.cpp
   js_engine.cpp
   sys_object.cpp
+  event_loop.cpp
 )
 
 target_link_libraries(

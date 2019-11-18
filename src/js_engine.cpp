@@ -233,12 +233,13 @@ namespace js {
     info->state = ModuleState::complete;
   }
 
-  void Engine::flush_job_queue() {
+  void JobQueue::flush() {
+    // TODO: Make this non-reentrant?
     std::list<Var> rejections;
     std::map<Var, Var> rejection_reasons;
 
-    while (!_job_queue->empty()) {
-      Job job = std::move(_job_queue->dequeue());
+    while (!this->empty()) {
+      Job job = std::move(this->dequeue());
       auto func = job.func();
       assert(func);
       Realm::from_object(func)->enter([&](auto& api) {

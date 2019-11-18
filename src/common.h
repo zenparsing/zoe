@@ -6,6 +6,9 @@
 #include <utility>
 #include <string>
 
+#include "uv.h"
+#include "ChakraCore.h"
+
 template<typename F>
 struct OnScopeExit {
   OnScopeExit(F fn) : fn(fn) {}

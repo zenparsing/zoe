@@ -1,6 +1,7 @@
 #include "common.h"
 #include "js_engine.h"
 #include "sys_object.h"
+#include "event_loop.h"
 #include "main.js.h"
 
 template<typename T>
@@ -40,7 +41,7 @@ void print_error(T& out, js::RealmAPI& api) {
 int main(int arg_count, char** args) {
   js::Engine engine;
   js::Realm realm = engine.create_realm();
-  bool script_error = false;
+  int error_code = 0;
 
   realm.enter([&](auto& api) {
 
@@ -59,9 +60,11 @@ int main(int arg_count, char** args) {
 
       engine.flush_job_queue();
 
+      event_loop::run();
+
     } catch (const js::ScriptError&) {
 
-      script_error = true;
+      error_code = 1;
       print_error(std::cout, api);
 
     }
@@ -69,5 +72,5 @@ int main(int arg_count, char** args) {
   });
 
   // TODO: Unique error codes?
-  return script_error ? 0 : 1;
+  return error_code;
 }
