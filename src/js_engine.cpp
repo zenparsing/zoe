@@ -74,8 +74,8 @@ namespace {
 
   struct SetModuleSourceFunc : public NativeFunc {
     inline static std::string name = "setModuleSource";
-    static Var call(RealmAPI& api, CallArgs& args, Var data) {
-      api.set_module_source(data, args[1], args[2]);
+    static Var call(RealmAPI& api, CallArgs& args) {
+      api.set_module_source(args.state, args[1], args[2]);
       return nullptr;
     }
   };

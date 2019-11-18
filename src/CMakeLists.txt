@@ -19,7 +19,7 @@ add_executable(
   zoe
   main.cpp
   url.cpp
-  fs.cpp
+  os.cpp
   js_engine.cpp
   sys_object.cpp
 )

@@ -238,6 +238,18 @@ namespace js {
       return result;
     }
 
+    Var create_error(const std::string& message) {
+      Var result;
+      JsCreateError(create_string(message), &result);
+      return result;
+    }
+
+    Var create_type_error(const std::string& message) {
+      Var result;
+      JsCreateTypeError(create_string(message), &result);
+      return result;
+    }
+
     Var construct(Var fn, const std::vector<Var>& args = {}) {
       Var result;
       if (args.empty()) {
@@ -523,6 +535,7 @@ namespace js {
     Var callee;
     Var* args;
     unsigned short count;
+    Var state;
     Var undefined;
 
     Var operator[](size_t index) {
@@ -537,21 +550,15 @@ namespace js {
   struct NativeFunc {
     inline static std::string name = "";
 
-    static Var construct(RealmAPI& api, CallArgs& args, Var data) {
-      auto err = api.construct(api.global_property("TypeError"), {
-        api.undefined(),
-        api.create_string("Function is not a constructor"),
-      });
-      api.set_exception(err);
+    static Var construct(RealmAPI& api, CallArgs& args) {
+      api.set_exception(
+        api.create_type_error("Function is not a constructor"));
       return nullptr;
     }
 
-    static Var call(RealmAPI& api, CallArgs& args, Var data) {
-      auto err = api.construct(api.global_property("TypeError"), {
-        api.undefined(),
-        api.create_string("Constructor cannot be called without the new keyword"),
-      });
-      api.set_exception(err);
+    static Var call(RealmAPI& api, CallArgs& args) {
+      api.set_exception(
+        api.create_type_error("Constructor cannot be called without the new keyword"));
       return nullptr;
     }
   };
@@ -565,26 +572,30 @@ namespace js {
     void* data)
   {
     RealmAPI api {Realm::current()->info()};
-    CallArgs call_args {callee, args, arg_count, api.undefined()};
+
+    CallArgs call_args {
+      callee,
+      args,
+      arg_count,
+      data,
+      api.undefined()};
 
     try {
       return construct
-        ? T::construct(api, call_args, data)
-        : T::call(api, call_args, data);
+        ? T::construct(api, call_args)
+        : T::call(api, call_args);
     } catch (const ScriptError&) {
-      return nullptr;
+      // When a ScriptError is throw, the JS exception is already
+      // set and will be thrown to the caller
     } catch (const HostError& error) {
       // Convert HostErrors to JS exceptions
-      auto err = api.construct(api.global_property("Error"), {
-        api.undefined(),
-        api.create_string(error.message),
-      });
+      auto err = api.create_error(error.message);
       api.set_property(err, "code", api.create_string(error.code));
       api.set_exception(err);
-      return nullptr;
     }
 
     // TODO: Crash if another kind of error is thrown?
+    return nullptr;
   }
 
   struct Engine {

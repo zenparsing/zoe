@@ -34,7 +34,7 @@
     const url = sys.resolveFilePath(sys.args[1], sys.cwd());
     import(url).then(ns => {
       if (typeof ns.main === 'function') {
-        ns.main(hostAPI);
+        ns.main(hostAPI, sys); // TODO: Only passing sys for dev
       }
     });
   }

@@ -1,9 +1,7 @@
-#include <climits>
-
 #include "common.h"
-#include "sys_object.h"
+#include "os.h"
 #include "url.h"
-#include "fs.h"
+#include "sys_object.h"
 
 namespace {
 
@@ -12,9 +10,15 @@ namespace {
   using js::CallArgs;
   using js::NativeFunc;
 
+  std::string url_to_file_path(const std::string& url) {
+    // TODO: Throw if url is not a file URL?
+    return URLInfo::to_file_path(URLInfo::parse(url));
+  }
+
   struct StdOutFunc : public NativeFunc {
     inline static std::string name = "stdout";
-    static Var call(RealmAPI& api, CallArgs& args, Var data) {
+    static Var call(RealmAPI& api, CallArgs& args) {
+      // TODO: Handle buffer types
       for (unsigned i = 1; i < args.count; ++i) {
         std::cout << api.utf8_string(args[i]);
       }
@@ -24,10 +28,9 @@ namespace {
 
   struct ResolveFilePathFunc : public NativeFunc {
     inline static std::string name = "resolveFilePath";
-    static Var call(RealmAPI& api, CallArgs& args, Var data) {
+    static Var call(RealmAPI& api, CallArgs& args) {
       auto path = api.utf8_string(args[1]);
       auto base = api.utf8_string(args[2]);
-
       // TODO: throw if URL parsing fails
       auto base_url = URLInfo::parse(base);
       auto info = URLInfo::from_file_path(path, &base_url);
@@ -37,20 +40,42 @@ namespace {
 
   struct ReadTextFileSyncFunc : public NativeFunc {
     inline static std::string name = "readTextFileSync";
-    static Var call(RealmAPI& api, CallArgs& args, Var data) {
+    static Var call(RealmAPI& api, CallArgs& args) {
       auto url_string = api.utf8_string(args[1]);
-      URLInfo url = URLInfo::parse(url_string);
-      auto path = URLInfo::to_file_path(url);
-      auto content = fs::read_text_file_sync(path);
+      auto path = url_to_file_path(url_string);
+      auto content = os::read_text_file_sync(path);
       return api.create_string(content);
     }
   };
 
   struct CwdFunc : public NativeFunc {
     inline static std::string name = "cwd";
-    static Var call(RealmAPI& api, CallArgs& args, Var data) {
-      auto url_info = URLInfo::from_file_path(fs::cwd() + "/");
+    static Var call(RealmAPI& api, CallArgs& args) {
+      auto url_info = URLInfo::from_file_path(os::cwd() + "/");
       return api.create_string(URLInfo::stringify(url_info));
+    }
+  };
+
+  struct OpenDirectoryFunc : public NativeFunc {
+    inline static std::string name = "openDirectory";
+    static Var call(RealmAPI& api, CallArgs& args) {
+      auto url_string = api.utf8_string(args[1]);
+      auto path = url_to_file_path(url_string);
+      return nullptr;
+    }
+  };
+
+  struct ReadDirectoryFunc : public NativeFunc {
+    inline static std::string name = "readDirectory";
+    static Var call(RealmAPI& api, CallArgs& args) {
+      return nullptr;
+    }
+  };
+
+  struct CloseDirectoryFunc : public NativeFunc {
+    inline static std::string name = "closeDirectory";
+    static Var call(RealmAPI& api, CallArgs& args) {
+      return nullptr;
     }
   };
 
@@ -95,6 +120,9 @@ Var sys_object::create(RealmAPI& api, int arg_count, char** args) {
   builder.add_method<ResolveFilePathFunc>();
   builder.add_method<CwdFunc>();
   builder.add_method<ReadTextFileSyncFunc>();
+  builder.add_method<OpenDirectoryFunc>();
+  builder.add_method<ReadDirectoryFunc>();
+  builder.add_method<CloseDirectoryFunc>();
 
   return builder.object();
 }
