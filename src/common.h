@@ -6,6 +6,7 @@
 #include <utility>
 #include <string>
 
+// NOTE: We get errors if UV is included after CC
 #include "uv.h"
 #include "ChakraCore.h"
 
@@ -20,26 +21,3 @@ template<typename F>
 OnScopeExit<F> on_scope_exit(F fn) {
   return OnScopeExit<F>(fn);
 }
-
-enum class HostErrorKind {
-  js_engine,
-  libuv,
-};
-
-struct HostError {
-  HostErrorKind kind;
-  std::string message;
-  std::string code;
-
-  HostError(HostErrorKind kind, std::string&& message) :
-    kind {kind},
-    message {std::move(message)},
-    code {""}
-  {}
-
-  HostError(HostErrorKind kind, std::string&& message, std::string&& code) :
-    kind {kind},
-    message {std::move(message)},
-    code {std::move(code)}
-  {}
-};

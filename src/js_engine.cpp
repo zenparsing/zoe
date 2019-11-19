@@ -7,7 +7,7 @@ namespace {
     Var func,
     void* state)
   {
-    Realm::enter_current([=](auto& api) {
+    enter_current_realm([=](auto& api) {
       api.enqueue_job(Job {JobKind::call, func});
     });
   }
@@ -18,7 +18,7 @@ namespace {
     bool handled,
     void* state)
   {
-    Realm::enter_current([=](auto& api) {
+    enter_current_realm([=](auto& api) {
       JobKind job_type = handled
         ? JobKind::remove_unhandled_rejection
         : JobKind::add_unhandled_rejection;
@@ -31,7 +31,7 @@ namespace {
     Var specifier,
     JsModuleRecord* module)
   {
-    *module = Realm::enter_current([=](auto& api) {
+    *module = enter_current_realm([=](auto& api) {
       return api.resolve_module(importer, specifier);
     });
     return JsNoError;
@@ -42,7 +42,7 @@ namespace {
     Var specifier,
     JsModuleRecord* module)
   {
-    *module = Realm::enter_current([=](auto& api) {
+    *module = enter_current_realm([=](auto& api) {
       return api.resolve_module_from_script(script_id, specifier);
     });
     return JsNoError;
@@ -52,7 +52,7 @@ namespace {
     JsModuleRecord module,
     Var exception)
   {
-    Realm::enter_current([=](auto& api) {
+    enter_current_realm([=](auto& api) {
       api.enqueue_job(Job {
         JobKind::evaluate_module,
         api.undefined(),
@@ -66,7 +66,7 @@ namespace {
     JsModuleRecord module,
     Var meta_object)
   {
-    Realm::enter_current([=](auto& api) {
+    enter_current_realm([=](auto& api) {
       api.initialize_import_meta(module, meta_object);
     });
     return JsNoError;
@@ -192,7 +192,7 @@ namespace js {
     }
 
     auto source = utf8_string(info->source.var());
-    info->source.clear();
+    info->source.release();
 
     Var err;
 
@@ -242,7 +242,7 @@ namespace js {
       Job job = std::move(this->dequeue());
       auto func = job.func();
       assert(func);
-      Realm::from_object(func)->enter([&](auto& api) {
+      enter_object_realm(func, [&](auto& api) {
         switch (job.kind()) {
           case JobKind::call: {
             if (job.args().empty()) {
@@ -287,7 +287,7 @@ namespace js {
           it != rejection_reasons.end())
         {
           auto reason = it->second;
-          Realm::from_object(promise)->enter([=](auto& api) {
+          enter_object_realm(promise, [=](auto& api) {
             api.throw_exception(reason);
           });
         }

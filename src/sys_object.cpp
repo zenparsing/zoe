@@ -12,10 +12,40 @@ namespace {
   using js::CallArgs;
   using js::NativeFunc;
 
+  Var os_error_to_js_error(RealmAPI& api, const os::Error& error) {
+    auto e = api.create_error(error.message);
+    api.set_property(e, "code", api.create_string(error.code));
+    return e;
+  }
+
+  Var exception_from_os_error(RealmAPI& api, const os::Error& error) {
+    api.set_exception(os_error_to_js_error(api, error));
+    return nullptr;
+  }
+
   std::string url_to_file_path(const std::string& url) {
     // TODO: Throw if url is not a file URL?
     return URLInfo::to_file_path(URLInfo::parse(url));
   }
+
+  struct OsCallback {
+    static void on_success(void* data) {
+      auto callback = reinterpret_cast<Var>(data);
+      VarRef::decrement(callback);
+      js::enter_object_realm(callback, [&](auto& api) {
+        event_loop::dispatch_event(callback, api.undefined());
+      });
+    }
+
+    static void on_error(const os::Error& error, void* data) {
+      auto callback = reinterpret_cast<Var>(data);
+      VarRef::decrement(callback);
+      js::enter_object_realm(callback, [&](auto& api) {
+        auto obj = os_error_to_js_error(api, error);
+        event_loop::dispatch_event(callback, obj);
+      });
+    }
+  };
 
   struct StdOutFunc : public NativeFunc {
     inline static std::string name = "stdout";
@@ -43,44 +73,49 @@ namespace {
   struct ReadTextFileSyncFunc : public NativeFunc {
     inline static std::string name = "readTextFileSync";
     static Var call(RealmAPI& api, CallArgs& args) {
-      auto url_string = api.utf8_string(args[1]);
-      auto path = url_to_file_path(url_string);
-      auto content = os::read_text_file_sync(path);
-      return api.create_string(content);
+      try {
+        auto url_string = api.utf8_string(args[1]);
+        auto path = url_to_file_path(url_string);
+        auto content = os::read_text_file_sync(path);
+        return api.create_string(content);
+      } catch (const os::Error& err) {
+        return exception_from_os_error(api, err);
+      }
     }
   };
 
   struct CwdFunc : public NativeFunc {
     inline static std::string name = "cwd";
     static Var call(RealmAPI& api, CallArgs& args) {
-      auto url_info = URLInfo::from_file_path(os::cwd() + "/");
-      return api.create_string(URLInfo::stringify(url_info));
+      try {
+        auto url_info = URLInfo::from_file_path(os::cwd() + "/");
+        return api.create_string(URLInfo::stringify(url_info));
+      } catch (const os::Error& err) {
+        return exception_from_os_error(api, err);
+      }
     }
   };
 
   struct OpenDirectoryFunc : public NativeFunc {
     inline static std::string name = "openDirectory";
+
+    struct Callback : public OsCallback {
+      static void on_success(os::DirectoryHandle* dir, void* data) {
+        auto callback = reinterpret_cast<Var>(data);
+        VarRef::decrement(callback);
+        js::enter_object_realm(callback, [&](auto& api) {
+          Var obj = api.create_host_object(dir);
+          event_loop::dispatch_event(callback, obj);
+        });
+      }
+    };
+
     static Var call(RealmAPI& api, CallArgs& args) {
       auto url_string = api.utf8_string(args[1]);
       auto path = url_to_file_path(url_string);
-      auto callback = VarRef {args[2]};
-      // TODO: This results in a bunch of unnecessary VarRef copies.
-      // We really only need to have one VarRef. Also, the only
-      // interesting thing we're going to do here is map the result
-      // object (DirectoryHandle here) into a JS object. The common
-      // stuff should be factored out. And maybe after that we don't
-      // really need the template lambda callbacks after all.
-      os::open_directory(path, [=](os::DirectoryHandle dir) {
-        js::Realm::from_object(callback.var())->enter([&](auto& api) {
-          // TODO: Wrap the result
-          event_loop::dispatch_event(callback.var(), api.create_object());
-        });
-      }, [=](HostError& error) {
-        js::Realm::from_object(callback.var())->enter([&](auto& api) {
-          // TODO: Wrap the error
-          event_loop::dispatch_event(callback.var(), api.create_object());
-        });
-      });
+      auto callback = args[2];
+      VarRef::increment(callback);
+      os::open_directory<Callback>(path, callback);
       return nullptr;
     }
   };
@@ -94,7 +129,13 @@ namespace {
 
   struct CloseDirectoryFunc : public NativeFunc {
     inline static std::string name = "closeDirectory";
+
     static Var call(RealmAPI& api, CallArgs& args) {
+      // TODO:
+      // If not a wrapped DirectoryHandle, throw a TypeError.
+      // If DirectoryHandle has already been cleared, throw a TypeError.
+      // Clear directory handle.
+      // Call os::close_directory with directory handle.
       return nullptr;
     }
   };

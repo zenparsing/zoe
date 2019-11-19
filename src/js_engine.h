@@ -25,18 +25,8 @@ namespace js {
       }
     }
 
-    VarRef(const VarRef& other) : _ref {other._ref} {
-      if (_ref) {
-        JsAddRef(_ref, nullptr);
-      }
-    }
-
-    VarRef& operator=(const VarRef& other) {
-      if (this != &other) {
-        _ref = other._ref;
-        JsAddRef(_ref, nullptr);
-      }
-    }
+    VarRef(const VarRef& other) = delete;
+    VarRef& operator=(const VarRef& other) = delete;
 
     VarRef(VarRef&& other) : _ref {other._ref} {
       other._ref = nullptr;
@@ -63,11 +53,21 @@ namespace js {
     const Var var() const { return _ref; }
     Var var() { return _ref; }
 
-    void clear() {
-      if (_ref) {
-        JsRelease(_ref, nullptr);
+    Var release() {
+      Var ref = _ref;
+      if (ref) {
+        JsRelease(ref, nullptr);
         _ref = nullptr;
       }
+      return ref;
+    }
+
+    static void increment(Var obj) {
+      JsAddRef(obj, nullptr);
+    }
+
+    static void decrement(Var obj) {
+      JsRelease(obj, nullptr);
     }
 
   };
@@ -245,6 +245,12 @@ namespace js {
     Var create_object() {
       Var result;
       JsCreateObject(&result);
+      return result;
+    }
+
+    Var create_host_object(void* data) {
+      Var result;
+      JsCreateExternalObject(data, nullptr, &result);
       return result;
     }
 
@@ -550,11 +556,6 @@ namespace js {
       return Realm::from_context_ref(context);
     }
 
-    template<typename F>
-    static auto enter_current(F fn) {
-      return fn(RealmAPI {Realm::current()->info()});
-    }
-
   };
 
   struct CallArgs {
@@ -611,13 +612,8 @@ namespace js {
         ? T::construct(api, call_args)
         : T::call(api, call_args);
     } catch (const ScriptError&) {
-      // When a ScriptError is throw, the JS exception is already
+      // When a ScriptError is thrown, the JS exception is already
       // set and will be thrown to the caller
-    } catch (const HostError& error) {
-      // Convert HostErrors to JS exceptions
-      auto err = api.create_error(error.message);
-      api.set_property(err, "code", api.create_string(error.code));
-      api.set_exception(err);
     }
 
     // TODO: Crash if another kind of error is thrown?
@@ -681,6 +677,16 @@ namespace js {
 
   inline Realm* current_realm() {
     return Realm::current();
+  }
+
+  template<typename F>
+  inline auto enter_current_realm(F fn) {
+    return fn(RealmAPI {Realm::current()->info()});
+  }
+
+  template<typename F>
+  inline auto enter_object_realm(Var obj, F fn) {
+    return fn(RealmAPI {Realm::from_object(obj)->info()});
   }
 
 }

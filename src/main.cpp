@@ -58,8 +58,6 @@ int main(int arg_count, char** args) {
       auto main_func = api.get_property(callbacks, "main");
       auto main_result = api.call_function(main_func, {api.undefined()});
 
-      engine.flush_job_queue();
-
       event_loop::run();
 
     } catch (const js::ScriptError&) {
