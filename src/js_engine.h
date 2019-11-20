@@ -183,6 +183,19 @@ namespace js {
     }
   }
 
+  template<typename T>
+  struct HostObjectDataTraits {
+    using Kind = const unsigned;
+
+    static_assert(std::is_same_v<decltype(std::declval<T>().kind), Kind>);
+    static_assert(std::is_same_v<decltype(T::instance_kind), Kind>);
+    static_assert(offsetof(T, kind) == 0);
+
+    static void CHAKRA_CALLBACK finalize_callback(void* data) {
+      delete reinterpret_cast<T*>(data);
+    }
+  };
+
   struct RealmAPI {
     RealmInfo& _realm_info;
 
@@ -248,10 +261,29 @@ namespace js {
       return result;
     }
 
-    Var create_host_object(void* data) {
+    template<typename T, typename... Args>
+    Var create_host_object(Args... args) {
+      using Traits = HostObjectDataTraits<T>;
+      auto* instance = new T(args...);
+      assert(instance->kind == T::instance_kind);
       Var result;
-      JsCreateExternalObject(data, nullptr, &result);
+      JsCreateExternalObject(instance, Traits::finalize_callback, &result);
       return result;
+    }
+
+    template<typename T>
+    T* get_host_object_data(Var object) {
+      using Traits = HostObjectDataTraits<T>;
+      void* data;
+      JsGetExternalData(object, &data);
+      if (data == nullptr) {
+        return nullptr;
+      }
+      auto* kind_ptr = reinterpret_cast<const unsigned*>(data);
+      if (*kind_ptr != T::instance_kind) {
+        return nullptr;
+      }
+      return reinterpret_cast<T*>(data);
     }
 
     Var create_error(const std::string& message) {

@@ -96,15 +96,40 @@ namespace {
     }
   };
 
+  enum class HostObjectKind : unsigned {
+    directory_handle,
+  };
+
+  template<HostObjectKind kind_value>
+  struct HostObjectInfo {
+    const unsigned kind = HostObjectInfo::instance_kind;
+    static constexpr unsigned instance_kind = static_cast<unsigned>(kind_value);
+  };
+
+  struct DirectoryObjectInfo :
+    public HostObjectInfo<HostObjectKind::directory_handle>
+  {
+    os::DirectoryHandle handle;
+    bool open = true;
+
+    explicit DirectoryObjectInfo(os::DirectoryHandle handle) :
+      handle {handle}
+    {}
+
+    ~DirectoryObjectInfo() {
+      // TODO: maybe call os::close_directory?
+    }
+  };
+
   struct OpenDirectoryFunc : public NativeFunc {
     inline static std::string name = "openDirectory";
 
     struct Callback : public OsCallback {
-      static void on_success(os::DirectoryHandle* dir, void* data) {
+      static void on_success(os::DirectoryHandle dir, void* data) {
         auto callback = reinterpret_cast<Var>(data);
         VarRef::decrement(callback);
         js::enter_object_realm(callback, [&](auto& api) {
-          Var obj = api.create_host_object(dir);
+          Var obj = api.create_host_object<DirectoryObjectInfo>(dir);
           event_loop::dispatch_event(callback, obj);
         });
       }
@@ -122,7 +147,32 @@ namespace {
 
   struct ReadDirectoryFunc : public NativeFunc {
     inline static std::string name = "readDirectory";
+
+    struct Callback : public OsCallback {
+      static void on_success(std::vector<std::string>& entries, void* data) {
+        auto callback = reinterpret_cast<Var>(data);
+        VarRef::decrement(callback);
+        js::enter_object_realm(callback, [&](auto& api) {
+          Var array = api.create_array(static_cast<int>(entries.size()));
+          for (int i = 0; i < entries.size(); ++i) {
+            auto entry = api.create_string(entries[i]);
+            api.set_indexed_property(array, i, entry);
+          }
+          event_loop::dispatch_event(callback, array);
+        });
+      }
+    };
+
     static Var call(RealmAPI& api, CallArgs& args) {
+      auto* dir = api.get_host_object_data<DirectoryObjectInfo>(args[1]);
+      if (!dir || !dir->open) {
+        // TODO: Throw type error
+        return nullptr;
+      }
+      auto count = api.to_integer<size_t>(args[2]);
+      auto callback = args[3];
+      VarRef::increment(callback);
+      os::read_directory<Callback>(dir->handle, count, callback);
       return nullptr;
     }
   };
@@ -131,11 +181,15 @@ namespace {
     inline static std::string name = "closeDirectory";
 
     static Var call(RealmAPI& api, CallArgs& args) {
-      // TODO:
-      // If not a wrapped DirectoryHandle, throw a TypeError.
-      // If DirectoryHandle has already been cleared, throw a TypeError.
-      // Clear directory handle.
-      // Call os::close_directory with directory handle.
+      auto* dir = api.get_host_object_data<DirectoryObjectInfo>(args[1]);
+      if (!dir || !dir->open) {
+        // TODO: Throw type error
+        return nullptr;
+      }
+      dir->open = false;
+      auto callback = args[2];
+      VarRef::increment(callback);
+      os::close_directory<OsCallback>(dir->handle, callback);
       return nullptr;
     }
   };
