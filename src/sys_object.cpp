@@ -28,21 +28,37 @@ namespace {
     return URLInfo::to_file_path(URLInfo::parse(url));
   }
 
+  Var get_callback_arg(Var arg) {
+    // TODO: Throw if not callable?
+    VarRef::increment(arg);
+    return arg;
+  }
+
+  template<typename F>
+  void dispatch_os_result(void* data, F fn) {
+    auto callback = reinterpret_cast<Var>(data);
+    VarRef::decrement(callback);
+    Var result = js::enter_object_realm(callback, fn);
+    event_loop::dispatch_event(callback, result);
+  }
+
+  template<typename F>
+  void dispatch_os_error(void* data, F fn) {
+    auto callback = reinterpret_cast<Var>(data);
+    VarRef::decrement(callback);
+    Var error = js::enter_object_realm(callback, fn);
+    event_loop::dispatch_error(callback, error);
+  }
+
   struct OsCallback {
     static void on_success(void* data) {
-      auto callback = reinterpret_cast<Var>(data);
-      VarRef::decrement(callback);
-      js::enter_object_realm(callback, [&](auto& api) {
-        event_loop::dispatch_event(callback, api.undefined());
+      dispatch_os_result(data, [](auto& api) {
+        return api.undefined();
       });
     }
-
     static void on_error(const os::Error& error, void* data) {
-      auto callback = reinterpret_cast<Var>(data);
-      VarRef::decrement(callback);
-      js::enter_object_realm(callback, [&](auto& api) {
-        auto obj = os_error_to_js_error(api, error);
-        event_loop::dispatch_event(callback, obj);
+      dispatch_os_error(data, [&](auto& api) {
+        return os_error_to_js_error(api, error);
       });
     }
   };
@@ -126,11 +142,8 @@ namespace {
 
     struct Callback : public OsCallback {
       static void on_success(os::DirectoryHandle dir, void* data) {
-        auto callback = reinterpret_cast<Var>(data);
-        VarRef::decrement(callback);
-        js::enter_object_realm(callback, [&](auto& api) {
-          Var obj = api.create_host_object<DirectoryObjectInfo>(dir);
-          event_loop::dispatch_event(callback, obj);
+        dispatch_os_result(data, [&](auto& api) {
+          return api.create_host_object<DirectoryObjectInfo>(dir);
         });
       }
     };
@@ -138,8 +151,7 @@ namespace {
     static Var call(RealmAPI& api, CallArgs& args) {
       auto url_string = api.utf8_string(args[1]);
       auto path = url_to_file_path(url_string);
-      auto callback = args[2];
-      VarRef::increment(callback);
+      auto callback = get_callback_arg(args[2]);
       os::open_directory<Callback>(path, callback);
       return nullptr;
     }
@@ -150,15 +162,13 @@ namespace {
 
     struct Callback : public OsCallback {
       static void on_success(std::vector<std::string>& entries, void* data) {
-        auto callback = reinterpret_cast<Var>(data);
-        VarRef::decrement(callback);
-        js::enter_object_realm(callback, [&](auto& api) {
+        dispatch_os_result(data, [&](auto& api) {
           Var array = api.create_array(static_cast<int>(entries.size()));
           for (int i = 0; i < entries.size(); ++i) {
             auto entry = api.create_string(entries[i]);
             api.set_indexed_property(array, i, entry);
           }
-          event_loop::dispatch_event(callback, array);
+          return array;
         });
       }
     };
@@ -166,12 +176,12 @@ namespace {
     static Var call(RealmAPI& api, CallArgs& args) {
       auto* dir = api.get_host_object_data<DirectoryObjectInfo>(args[1]);
       if (!dir || !dir->open) {
-        // TODO: Throw type error
+        auto error = api.create_type_error("Not an open directory handle");
+        api.throw_exception(error);
         return nullptr;
       }
       auto count = api.to_integer<size_t>(args[2]);
-      auto callback = args[3];
-      VarRef::increment(callback);
+      auto callback = get_callback_arg(args[3]);
       os::read_directory<Callback>(dir->handle, count, callback);
       return nullptr;
     }
@@ -183,12 +193,12 @@ namespace {
     static Var call(RealmAPI& api, CallArgs& args) {
       auto* dir = api.get_host_object_data<DirectoryObjectInfo>(args[1]);
       if (!dir || !dir->open) {
-        // TODO: Throw type error
+        auto error = api.create_type_error("Not an open directory handle");
+        api.throw_exception(error);
         return nullptr;
       }
       dir->open = false;
-      auto callback = args[2];
-      VarRef::increment(callback);
+      auto callback = get_callback_arg(args[2]);
       os::close_directory<OsCallback>(dir->handle, callback);
       return nullptr;
     }
