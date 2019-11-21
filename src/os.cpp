@@ -2,7 +2,7 @@
 #include <string>
 #include <climits>
 #include <cstdlib>
-#include <map>
+#include <unordered_set>
 
 #include "os.h"
 
@@ -34,35 +34,6 @@ namespace os {
     _check_uv(uv_cwd(buffer, &cwd_len));
     return {buffer};
   }
-
-  template<typename K, typename V>
-  struct HandleMap {
-    static_assert(std::is_pointer_v<V>);
-
-    K next = 0;
-    std::map<K, V> map;
-
-    K insert(V val) {
-      auto handle = ++next;
-      map[handle] = val;
-      return handle;
-    }
-
-    V find(K key) {
-      auto i = map.find(key);
-      return i == map.end() ? nullptr : i->second;
-    }
-
-    V remove(K key) {
-      auto i = map.find(key);
-      if (i == map.end()) {
-        return nullptr;
-      }
-      auto val = i->second;
-      map.erase(i);
-      return val;
-    }
-  };
 
   // Timers
 
@@ -215,7 +186,7 @@ namespace os {
 
   // Directory access
 
-  HandleMap<DirectoryHandle, uv_dir_t*> directory_handles;
+  std::unordered_set<DirectoryHandle> directory_handles;
 
   void open_directory(
     const std::string& path,
@@ -229,7 +200,9 @@ namespace os {
         auto* dir = reinterpret_cast<uv_dir_t*>(req->ptr);
         dir->dirents = nullptr;
         dir->nentries = 0;
-        return directory_handles.insert(dir);
+        auto handle = reinterpret_cast<DirectoryHandle>(dir);
+        directory_handles.insert(handle);
+        return handle;
       }
     };
 
@@ -262,13 +235,14 @@ namespace os {
       }
     };
 
-    auto* dir = directory_handles.find(handle);
-    if (!dir) {
+    if (directory_handles.count(handle) == 0) {
       return enqueue_error_callback(
         Error {"not an open directory"},
         data,
         on_error);
     }
+
+    auto* dir = reinterpret_cast<uv_dir_t*>(handle);
     if (dir->dirents) {
       return enqueue_error_callback(
         Error {"read_directory in progress"},
@@ -297,13 +271,15 @@ namespace os {
       static void map(uv_fs_t*) {}
     };
 
-    auto* dir = directory_handles.find(handle);
-    if (!dir) {
+    auto iter = directory_handles.find(handle);
+    if (iter == directory_handles.end()) {
       return enqueue_error_callback(
         Error {"not an open directory"},
         data,
         on_error);
     }
+
+    auto* dir = reinterpret_cast<uv_dir_t*>(handle);
     if (dir->dirents) {
       return enqueue_error_callback(
         Error {"read_directory in progress"},
@@ -311,7 +287,7 @@ namespace os {
         on_error);
     }
 
-    directory_handles.remove(handle);
+    directory_handles.erase(iter);
 
     uv_fs_closedir(
       uv_default_loop(),

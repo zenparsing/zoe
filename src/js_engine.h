@@ -356,6 +356,8 @@ namespace js {
       auto name = create_string(T::name);
       JsNativeFunction native_func = native_func_callback<T>;
       Var func;
+      // TODO: We should probably be using JsCreateEnhancedFunction so
+      // that we have access to "new target".
       _checked(JsCreateNamedFunction(name, native_func, hidden, &func));
       return func;
     }
@@ -647,7 +649,7 @@ namespace js {
       // When a ScriptError is thrown, the JS exception is already
       // set and will be thrown to the caller
     } catch (...) {
-      // Should this be a crash instead?
+      // TODO: Should this be a crash instead?
       assert(false);
     }
 
