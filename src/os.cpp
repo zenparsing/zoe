@@ -2,6 +2,7 @@
 #include <string>
 #include <climits>
 #include <cstdlib>
+#include <map>
 
 #include "os.h"
 
@@ -33,6 +34,106 @@ namespace os {
     _check_uv(uv_cwd(buffer, &cwd_len));
     return {buffer};
   }
+
+  template<typename K, typename V>
+  struct HandleMap {
+    static_assert(std::is_pointer_v<V>);
+
+    K next = 0;
+    std::map<K, V> map;
+
+    K insert(V val) {
+      auto handle = ++next;
+      map[handle] = val;
+      return handle;
+    }
+
+    V find(K key) {
+      auto i = map.find(key);
+      return i == map.end() ? nullptr : i->second;
+    }
+
+    V remove(K key) {
+      auto i = map.find(key);
+      if (i == map.end()) {
+        return nullptr;
+      }
+      auto val = i->second;
+      map.erase(i);
+      return val;
+    }
+  };
+
+  // Timers
+
+  struct TimerReq {
+    uv_timer_t req;
+    OnTimer on_timer;
+
+    TimerReq(void* data, OnTimer on_timer) : on_timer {on_timer} {
+      req.data = data;
+    }
+
+    static TimerReq* create(void* data, OnTimer on_timer) {
+      return new TimerReq(data, on_timer);
+    }
+
+    static void callback(uv_timer_t* req) {
+      static_assert(offsetof(struct TimerReq, req) == 0);
+      auto* instance = reinterpret_cast<TimerReq*>(req);
+      instance->on_timer(instance->req.data);
+    }
+  };
+
+  TimerHandle start_timer(
+    uint64_t timeout,
+    uint64_t repeat,
+    void* data,
+    OnTimer on_timer)
+  {
+    auto* timer = TimerReq::create(data, on_timer);
+    uv_timer_init(uv_default_loop(), &timer->req);
+    uv_timer_start(&timer->req, TimerReq::callback, timeout, repeat);
+    return reinterpret_cast<TimerHandle>(timer);
+  }
+
+  void stop_timer(TimerHandle handle) {
+    auto* timer = reinterpret_cast<TimerReq*>(handle);
+    uv_timer_stop(&timer->req);
+    delete timer;
+  }
+
+  void enqueue_error_callback(
+    const Error& error,
+    void* data,
+    OnError on_error)
+  {
+    struct TimerInfo {
+      uv_timer_t timer;
+      Error error;
+      void* data;
+      OnError on_error;
+
+      TimerInfo(const Error& error, void* data, OnError on_error) :
+        error {error},
+        data {data},
+        on_error {on_error}
+      {}
+
+      static void callback(uv_timer_t* timer) {
+        static_assert(offsetof(struct TimerInfo, timer) == 0);
+        auto* info = reinterpret_cast<TimerInfo*>(timer);
+        auto cleanup = on_scope_exit([=]() { delete info; });
+        info->on_error(info->error, info->data);
+      }
+    };
+
+    auto* info = new TimerInfo(error, data, on_error);
+    uv_timer_init(uv_default_loop(), &info->timer);
+    uv_timer_start(&info->timer, TimerInfo::callback, 0, 0);
+  }
+
+  // File system
 
   std::string read_text_file_sync(const std::string& path) {
     uv_fs_t req;
@@ -112,6 +213,10 @@ namespace os {
     }
   };
 
+  // Directory access
+
+  HandleMap<DirectoryHandle, uv_dir_t*> directory_handles;
+
   void open_directory(
     const std::string& path,
     void* data,
@@ -121,9 +226,10 @@ namespace os {
     struct Traits {
       using OnSuccess = OnOpenDirectory;
       static DirectoryHandle map(uv_fs_t* req) {
-        // TODO: We might want to have a map of directory handles
-        // to uv_dir_t pointers, instead of direct pointers
-        return reinterpret_cast<DirectoryHandle>(req->ptr);
+        auto* dir = reinterpret_cast<uv_dir_t*>(req->ptr);
+        dir->dirents = nullptr;
+        dir->nentries = 0;
+        return directory_handles.insert(dir);
       }
     };
 
@@ -131,24 +237,6 @@ namespace os {
       uv_default_loop(),
       FsReq<Traits>::create_req(data, on_success, on_error),
       path.c_str(),
-      FsReq<Traits>::callback);
-  }
-
-  void close_directory(
-    DirectoryHandle handle,
-    void* data,
-    OnCloseDirectory on_success,
-    OnError on_error)
-  {
-    struct Traits {
-      using OnSuccess = OnCloseDirectory;
-      static void map(uv_fs_t*) {}
-    };
-
-    uv_fs_closedir(
-      uv_default_loop(),
-      FsReq<Traits>::create_req(data, on_success, on_error),
-      reinterpret_cast<uv_dir_t*>(handle),
       FsReq<Traits>::callback);
   }
 
@@ -174,11 +262,58 @@ namespace os {
       }
     };
 
-    auto* dir = reinterpret_cast<uv_dir_t*>(handle);
+    auto* dir = directory_handles.find(handle);
+    if (!dir) {
+      return enqueue_error_callback(
+        Error {"not an open directory"},
+        data,
+        on_error);
+    }
+    if (dir->dirents) {
+      return enqueue_error_callback(
+        Error {"read_directory in progress"},
+        data,
+        on_error);
+    }
+
     dir->dirents = new uv_dirent_t[count];
     dir->nentries = count;
 
     uv_fs_readdir(
+      uv_default_loop(),
+      FsReq<Traits>::create_req(data, on_success, on_error),
+      dir,
+      FsReq<Traits>::callback);
+  }
+
+  void close_directory(
+    DirectoryHandle handle,
+    void* data,
+    OnCloseDirectory on_success,
+    OnError on_error)
+  {
+    struct Traits {
+      using OnSuccess = OnCloseDirectory;
+      static void map(uv_fs_t*) {}
+    };
+
+    auto* dir = directory_handles.find(handle);
+    if (!dir) {
+      return enqueue_error_callback(
+        Error {"not an open directory"},
+        data,
+        on_error);
+    }
+    if (dir->dirents) {
+      return enqueue_error_callback(
+        Error {"read_directory in progress"},
+        data,
+        on_error);
+    }
+
+    directory_handles.remove(handle);
+
+    uv_fs_closedir(
       uv_default_loop(),
       FsReq<Traits>::create_req(data, on_success, on_error),
       dir,

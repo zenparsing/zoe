@@ -18,20 +18,30 @@ namespace {
     return e;
   }
 
-  Var exception_from_os_error(RealmAPI& api, const os::Error& error) {
-    api.set_exception(os_error_to_js_error(api, error));
-    return nullptr;
+  void throw_os_error(RealmAPI& api, const os::Error& error) {
+    api.throw_exception(os_error_to_js_error(api, error));
+  }
+
+  Var track_callback_arg(Var arg) {
+    // TODO: Throw if not callable?
+    VarRef::increment(arg);
+    return arg;
+  }
+
+  void enqueue_error_callback(RealmAPI& api, Var callback, Var error) {
+    api.enqueue_job(callback, {api.undefined(), error});
+  }
+
+  void enqueue_type_error(RealmAPI& api, Var callback, const std::string& message) {
+    api.enqueue_job(callback, {
+      api.undefined(),
+      api.create_type_error(message),
+    });
   }
 
   std::string url_to_file_path(const std::string& url) {
     // TODO: Throw if url is not a file URL?
     return URLInfo::to_file_path(URLInfo::parse(url));
-  }
-
-  Var get_callback_arg(Var arg) {
-    // TODO: Throw if not callable?
-    VarRef::increment(arg);
-    return arg;
   }
 
   template<typename F>
@@ -89,13 +99,14 @@ namespace {
   struct ReadTextFileSyncFunc : public NativeFunc {
     inline static std::string name = "readTextFileSync";
     static Var call(RealmAPI& api, CallArgs& args) {
+      auto url_string = api.utf8_string(args[1]);
+      auto path = url_to_file_path(url_string);
       try {
-        auto url_string = api.utf8_string(args[1]);
-        auto path = url_to_file_path(url_string);
         auto content = os::read_text_file_sync(path);
         return api.create_string(content);
-      } catch (const os::Error& err) {
-        return exception_from_os_error(api, err);
+      } catch (const os::Error& error) {
+        throw_os_error(api, error);
+        return nullptr;
       }
     }
   };
@@ -103,12 +114,8 @@ namespace {
   struct CwdFunc : public NativeFunc {
     inline static std::string name = "cwd";
     static Var call(RealmAPI& api, CallArgs& args) {
-      try {
-        auto url_info = URLInfo::from_file_path(os::cwd() + "/");
-        return api.create_string(URLInfo::stringify(url_info));
-      } catch (const os::Error& err) {
-        return exception_from_os_error(api, err);
-      }
+      auto url_info = URLInfo::from_file_path(os::cwd() + "/");
+      return api.create_string(URLInfo::stringify(url_info));
     }
   };
 
@@ -122,11 +129,8 @@ namespace {
     static constexpr unsigned instance_kind = static_cast<unsigned>(kind_value);
   };
 
-  struct DirectoryObjectInfo :
-    public HostObjectInfo<HostObjectKind::directory_handle>
-  {
+  struct DirectoryObjectInfo : public HostObjectInfo<HostObjectKind::directory_handle>{
     os::DirectoryHandle handle;
-    bool open = true;
 
     explicit DirectoryObjectInfo(os::DirectoryHandle handle) :
       handle {handle}
@@ -151,7 +155,7 @@ namespace {
     static Var call(RealmAPI& api, CallArgs& args) {
       auto url_string = api.utf8_string(args[1]);
       auto path = url_to_file_path(url_string);
-      auto callback = get_callback_arg(args[2]);
+      auto callback = track_callback_arg(args[2]);
       os::open_directory<Callback>(path, callback);
       return nullptr;
     }
@@ -175,13 +179,12 @@ namespace {
 
     static Var call(RealmAPI& api, CallArgs& args) {
       auto* dir = api.get_host_object_data<DirectoryObjectInfo>(args[1]);
-      if (!dir || !dir->open) {
-        auto error = api.create_type_error("Not an open directory handle");
-        api.throw_exception(error);
+      if (!dir) {
+        enqueue_type_error(api, args[3], "Not a valid directory object");
         return nullptr;
       }
       auto count = api.to_integer<size_t>(args[2]);
-      auto callback = get_callback_arg(args[3]);
+      auto callback = track_callback_arg(args[3]);
       os::read_directory<Callback>(dir->handle, count, callback);
       return nullptr;
     }
@@ -192,13 +195,11 @@ namespace {
 
     static Var call(RealmAPI& api, CallArgs& args) {
       auto* dir = api.get_host_object_data<DirectoryObjectInfo>(args[1]);
-      if (!dir || !dir->open) {
-        auto error = api.create_type_error("Not an open directory handle");
-        api.throw_exception(error);
+      if (!dir) {
+        enqueue_type_error(api, args[2], "Not a valid directory object");
         return nullptr;
       }
-      dir->open = false;
-      auto callback = get_callback_arg(args[2]);
+      auto callback = track_callback_arg(args[2]);
       os::close_directory<OsCallback>(dir->handle, callback);
       return nullptr;
     }

@@ -8,19 +8,20 @@ namespace os {
 
   using FileHandle = uintptr_t;
   using DirectoryHandle = uintptr_t;
+  using TimerHandle = uintptr_t;
 
   struct Error {
     std::string message;
     std::string code;
 
-    Error(std::string&& message) :
-      message {std::move(message)},
+    Error(const std::string& message) :
+      message {message},
       code {""}
     {}
 
-    Error(std::string&& message, std::string&& code) :
-      message {std::move(message)},
-      code {std::move(code)}
+    Error(const std::string& message, const std::string& code) :
+      message {message},
+      code {code}
     {}
   };
 
@@ -34,6 +35,17 @@ namespace os {
   using OnOpenDirectory = void (*) (DirectoryHandle, void*);
   using OnReadDirectory = void (*) (std::vector<std::string>&, void*);
   using OnCloseDirectory = void (*) (void*);
+  using OnTimer = void (*) (void*);
+
+  // Starts a timer
+  TimerHandle start_timer(
+    uint64_t timeout,
+    uint64_t repeat,
+    void* data,
+    OnTimer on_timer);
+
+  // Stops a timer
+  void stop_timer(TimerHandle handle);
 
   // Opens a directory
   void open_directory(

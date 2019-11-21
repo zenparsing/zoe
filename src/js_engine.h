@@ -646,9 +646,11 @@ namespace js {
     } catch (const ScriptError&) {
       // When a ScriptError is thrown, the JS exception is already
       // set and will be thrown to the caller
+    } catch (...) {
+      // Should this be a crash instead?
+      assert(false);
     }
 
-    // TODO: Crash if another kind of error is thrown?
     return nullptr;
   }
 
