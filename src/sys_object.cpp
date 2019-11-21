@@ -120,6 +120,7 @@ namespace {
   };
 
   enum class HostObjectKind : unsigned {
+    timer_handle,
     directory_handle,
   };
 
@@ -129,7 +130,53 @@ namespace {
     static constexpr unsigned instance_kind = static_cast<unsigned>(kind_value);
   };
 
-  struct DirectoryObjectInfo : public HostObjectInfo<HostObjectKind::directory_handle>{
+  struct TimerObjectInfo :
+    public HostObjectInfo<HostObjectKind::timer_handle>
+  {
+    os::TimerHandle handle;
+    VarRef callback;
+
+    explicit TimerObjectInfo(os::TimerHandle handle, Var callback) :
+      handle {handle},
+      callback {callback}
+    {}
+  };
+
+  struct StartTimerFunc : public NativeFunc {
+    inline static std::string name = "startTimer";
+
+    static void timer_callback(void* data) {
+      auto callback = reinterpret_cast<Var>(data);
+      event_loop::dispatch_event(callback);
+    }
+
+    static Var call(RealmAPI& api, CallArgs& args) {
+      auto timeout = api.to_integer<uint64_t>(args[1]);
+      auto repeat = api.to_integer<uint64_t>(args[2]);
+      auto callback = args[3];
+      auto handle = os::start_timer(timeout, repeat, callback, timer_callback);
+      return api.create_host_object<TimerObjectInfo>(handle, callback);
+    }
+  };
+
+  struct StopTimerFunc : public NativeFunc {
+    inline static std::string name = "stopTimer";
+
+    static Var call(RealmAPI& api, CallArgs& args) {
+      auto* dir = api.get_host_object_data<TimerObjectInfo>(args[1]);
+      if (!dir) {
+        auto err = api.create_type_error("Not a valid timer object");
+        api.throw_exception(err);
+        return nullptr;
+      }
+      os::stop_timer(dir->handle);
+      return nullptr;
+    }
+  };
+
+  struct DirectoryObjectInfo :
+    public HostObjectInfo<HostObjectKind::directory_handle>
+  {
     os::DirectoryHandle handle;
 
     explicit DirectoryObjectInfo(os::DirectoryHandle handle) :
@@ -242,13 +289,19 @@ Var sys_object::create(RealmAPI& api, int arg_count, char** args) {
 
   builder.add_property("args", create_args(api, arg_count, args));
   builder.add_property("global", api.global_object());
+
   builder.add_method<StdOutFunc>();
-  builder.add_method<ResolveFilePathFunc>();
   builder.add_method<CwdFunc>();
+
+  builder.add_method<ResolveFilePathFunc>();
   builder.add_method<ReadTextFileSyncFunc>();
+
   builder.add_method<OpenDirectoryFunc>();
   builder.add_method<ReadDirectoryFunc>();
   builder.add_method<CloseDirectoryFunc>();
+
+  builder.add_method<StartTimerFunc>();
+  builder.add_method<StopTimerFunc>();
 
   return builder.object();
 }

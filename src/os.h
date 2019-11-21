@@ -44,6 +44,11 @@ namespace os {
     void* data,
     OnTimer on_timer);
 
+  template<typename T>
+  TimerHandle start_timer(uint64_t timeout, uint64_t repeat, void* data) {
+    return start_timer(timeout, repeat, data, T::on_success);
+  }
+
   // Stops a timer
   void stop_timer(TimerHandle handle);
 

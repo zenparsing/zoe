@@ -10,7 +10,7 @@ namespace event_loop {
       api.enqueue_job(callback, {
         api.undefined(),
         api.undefined(),
-        result,
+        result ? result : api.undefined(),
       });
       api.flush_job_queue();
     });

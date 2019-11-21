@@ -37,22 +37,55 @@ namespace os {
 
   // Timers
 
-  struct TimerReq {
+  struct Timer {
     uv_timer_t req;
+    bool repeating;
     OnTimer on_timer;
 
-    TimerReq(void* data, OnTimer on_timer) : on_timer {on_timer} {
+    Timer(void* data, bool repeating, OnTimer on_timer) :
+      repeating {repeating},
+      on_timer {on_timer}
+    {
       req.data = data;
     }
 
-    static TimerReq* create(void* data, OnTimer on_timer) {
-      return new TimerReq(data, on_timer);
+    ~Timer() {
+      timer_handles.erase(reinterpret_cast<TimerHandle>(this));
+    }
+
+    inline static std::unordered_set<TimerHandle> timer_handles;
+
+    static TimerHandle start(
+      uint64_t timeout,
+      uint64_t repeat,
+      void* data,
+      OnTimer on_timer)
+    {
+      bool repeating = (repeat != 0);
+      auto* timer = new Timer(data, repeating, on_timer);
+      uv_timer_init(uv_default_loop(), &timer->req);
+      uv_timer_start(&timer->req, callback, timeout, repeat);
+      auto handle = reinterpret_cast<TimerHandle>(timer);
+      timer_handles.insert(handle);
+      return handle;
+    }
+
+    static void stop(TimerHandle handle) {
+      if (timer_handles.count(handle) == 0) {
+        return;
+      }
+      auto* timer = reinterpret_cast<Timer*>(handle);
+      uv_timer_stop(&timer->req);
+      delete timer;
     }
 
     static void callback(uv_timer_t* req) {
-      static_assert(offsetof(struct TimerReq, req) == 0);
-      auto* instance = reinterpret_cast<TimerReq*>(req);
+      static_assert(offsetof(struct Timer, req) == 0);
+      auto* instance = reinterpret_cast<Timer*>(req);
       instance->on_timer(instance->req.data);
+      if (!instance->repeating) {
+        delete instance;
+      }
     }
   };
 
@@ -62,16 +95,11 @@ namespace os {
     void* data,
     OnTimer on_timer)
   {
-    auto* timer = TimerReq::create(data, on_timer);
-    uv_timer_init(uv_default_loop(), &timer->req);
-    uv_timer_start(&timer->req, TimerReq::callback, timeout, repeat);
-    return reinterpret_cast<TimerHandle>(timer);
+    return Timer::start(timeout, repeat, data, on_timer);
   }
 
   void stop_timer(TimerHandle handle) {
-    auto* timer = reinterpret_cast<TimerReq*>(handle);
-    uv_timer_stop(&timer->req);
-    delete timer;
+    Timer::stop(handle);
   }
 
   void enqueue_error_callback(
