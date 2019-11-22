@@ -84,6 +84,18 @@ namespace {
     }
   };
 
+  struct ResolveURLFunc : public NativeFunc {
+    inline static std::string name = "resolveURL";
+    static Var call(RealmAPI& api, CallArgs& args) {
+      auto url = api.utf8_string(args[1]);
+      auto base = api.utf8_string(args[2]);
+      // TODO: throw if URL parsing fails
+      auto base_url = URLInfo::parse(base);
+      auto info = URLInfo::parse(url, &base_url);
+      return api.create_string(URLInfo::stringify(info));
+    }
+  };
+
   struct ResolveFilePathFunc : public NativeFunc {
     inline static std::string name = "resolveFilePath";
     static Var call(RealmAPI& api, CallArgs& args) {
@@ -293,6 +305,7 @@ Var sys_object::create(RealmAPI& api, int arg_count, char** args) {
   builder.add_method<StdOutFunc>();
   builder.add_method<CwdFunc>();
 
+  builder.add_method<ResolveURLFunc>();
   builder.add_method<ResolveFilePathFunc>();
   builder.add_method<ReadTextFileSyncFunc>();
 

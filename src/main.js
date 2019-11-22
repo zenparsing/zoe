@@ -31,10 +31,16 @@
       return;
     }
 
+    let i = sys.args.indexOf('--zoe-test-sys-api');
+    if (i >= 0) {
+      hostAPI.sys = sys;
+      sys.args.splice(i, 1);
+    }
+
     const url = sys.resolveFilePath(sys.args[1], sys.cwd());
     import(url).then(ns => {
       if (typeof ns.main === 'function') {
-        ns.main(hostAPI, sys); // TODO: Only passing sys for dev
+        ns.main(hostAPI);
       }
     });
   }

@@ -256,6 +256,8 @@ namespace os {
         for (int i = 0; i < req->result; ++i) {
           entries.emplace_back(dir->dirents[i].name);
         }
+        // TODO: This should be safe to run twice...
+        uv_fs_req_cleanup(req);
         delete[] dir->dirents;
         dir->dirents = nullptr;
         dir->nentries = 0;
