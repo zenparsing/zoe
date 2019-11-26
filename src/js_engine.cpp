@@ -83,6 +83,69 @@ namespace {
 
 namespace js {
 
+  EngineError::EngineError(JsErrorCode code) : code {code} {
+    #define CASE_ERR(n, msg) case n: this->message = msg; break;
+    switch (code) {
+      // Usage
+      CASE_ERR(JsErrorInvalidArgument, "invalid argument")
+      CASE_ERR(JsErrorNullArgument, "null argument")
+      CASE_ERR(JsErrorNoCurrentContext, "no current context")
+      CASE_ERR(JsErrorInExceptionState, "in exception state")
+      CASE_ERR(JsErrorNotImplemented, "not implemented")
+      CASE_ERR(JsErrorWrongThread, "wrong thread")
+      CASE_ERR(JsErrorRuntimeInUse, "runtime in use")
+      CASE_ERR(JsErrorBadSerializedScript, "bad serialized script")
+      CASE_ERR(JsErrorInDisabledState, "in disabled state")
+      CASE_ERR(JsErrorCannotDisableExecution, "cannot disable execution")
+      CASE_ERR(JsErrorHeapEnumInProgress, "heap enum in progress")
+      CASE_ERR(JsErrorArgumentNotObject, "argument not object")
+      CASE_ERR(JsErrorInProfileCallback, "error in profile callback")
+      CASE_ERR(JsErrorInThreadServiceCallback, "cannot serialize debug script")
+      CASE_ERR(JsErrorCannotSerializeDebugScript, "cannot serialize debug script")
+      CASE_ERR(JsErrorAlreadyDebuggingContext, "already debugging context")
+      CASE_ERR(JsErrorAlreadyProfilingContext, "already profiling context")
+      CASE_ERR(JsErrorIdleNotEnabled, "idle not enabled")
+      CASE_ERR(JsCannotSetProjectionEnqueueCallback, "cannot set projection enqueue callback")
+      CASE_ERR(JsErrorCannotStartProjection, "cannot start projection")
+      CASE_ERR(JsErrorInObjectBeforeCollectCallback, "not supported in before collect callback")
+      CASE_ERR(JsErrorObjectNotInspectable, "object not inspectable")
+      CASE_ERR(JsErrorPropertyNotSymbol, "property is not a symbol")
+      CASE_ERR(JsErrorPropertyNotString, "property is not a string")
+      CASE_ERR(JsErrorInvalidContext, "invalid context")
+      CASE_ERR(JsInvalidModuleHostInfoKind, "invalid ModuleHostInfoKind")
+      CASE_ERR(JsErrorModuleParsed, "module already parsed")
+      CASE_ERR(JsNoWeakRefRequired, "object not garbage collected")
+      CASE_ERR(JsErrorPromisePending, "promise pending")
+      CASE_ERR(JsErrorModuleNotEvaluated, "module has not evaluated")
+
+      // Engine
+      CASE_ERR(JsErrorOutOfMemory, "out of memory")
+      CASE_ERR(JsErrorBadFPUState, "bad fpu state")
+
+      // Script
+      CASE_ERR(JsErrorScriptException, "script exception")
+      CASE_ERR(JsErrorScriptCompile, "failed to compile")
+      CASE_ERR(JsErrorScriptTerminated, "script terminated")
+      CASE_ERR(JsErrorScriptEvalDisabled, "eval disabled")
+
+      // Fatal
+      CASE_ERR(JsErrorFatal, "fatal engine error")
+      CASE_ERR(JsErrorWrongRuntime, "wrong runtime")
+
+      // Diag
+      CASE_ERR(JsErrorDiagAlreadyInDebugMode, "already in debug mode")
+      CASE_ERR(JsErrorDiagNotInDebugMode, "not in debug mode")
+      CASE_ERR(JsErrorDiagNotAtBreak, "not at break")
+      CASE_ERR(JsErrorDiagInvalidHandle, "invalid diag handle")
+      CASE_ERR(JsErrorDiagObjectNotFound, "diag object not found")
+      CASE_ERR(JsErrorDiagUnableToPerformAction, "unabled to perform diag action")
+      CASE_ERR(JsSerializerNotSupported, "serializer does not support data")
+      CASE_ERR(JsTransferableNotSupported, "object not transferrable during serialization")
+      CASE_ERR(JsTransferableAlreadyDetached, "object already detached when serialized")
+      default: this->message = "??"; break;
+    }
+  }
+
   Realm::Realm(JsContextRef context, std::shared_ptr<JobQueue>& job_queue) {
     _context = context;
     _info.job_queue = job_queue;

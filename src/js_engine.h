@@ -74,6 +74,9 @@ namespace js {
 
   struct EngineError {
     JsErrorCode code;
+    std::string message;
+
+    explicit EngineError(JsErrorCode code);
   };
 
   struct ScriptError {};
@@ -372,6 +375,16 @@ namespace js {
       _checked(JsSetProperty(object, create_property_id(name), value, true));
     }
 
+    Var get_indexed_property(Var object, Var index) {
+      Var result;
+      _checked(JsGetIndexedProperty(object, index, &result));
+      return result;
+    }
+
+    Var get_indexed_property(Var object, int index) {
+      return get_indexed_property(object, create_number(index));
+    }
+
     void set_indexed_property(Var object, Var index, Var value) {
       _checked(JsSetIndexedProperty(object, index, value));
     }
@@ -401,6 +414,12 @@ namespace js {
     Var to_string(Var value) {
       Var result;
       _checked(JsConvertValueToString(value, &result));
+      return result;
+    }
+
+    Var to_object(Var value) {
+      Var result;
+      _checked(JsConvertValueToObject(value, &result));
       return result;
     }
 
@@ -648,8 +667,13 @@ namespace js {
     } catch (const ScriptError&) {
       // When a ScriptError is thrown, the JS exception is already
       // set and will be thrown to the caller
+    } catch (const EngineError& error) {
+      // TODO: This should probably just crash the program
+      std::cerr << "Engine error: " << error.message << "\n";
+      assert(false);
     } catch (...) {
-      // TODO: Should this be a crash instead?
+      // TODO: Should this be a crash instead? Or should we allow it
+      // to attempt to unwind the stack completely?
       assert(false);
     }
 
@@ -661,9 +685,7 @@ namespace js {
     std::shared_ptr<JobQueue> _job_queue;
 
     Engine() {
-      if (JsCreateRuntime(JsRuntimeAttributeNone, nullptr, &_runtime) != JsNoError) {
-        throw EngineError {};
-      }
+      _checked(JsCreateRuntime(JsRuntimeAttributeNone, nullptr, &_runtime));
       _job_queue = std::make_shared<JobQueue>();
     }
 
@@ -695,9 +717,7 @@ namespace js {
 
     Realm create_realm() {
       JsContextRef context;
-      if (JsCreateContext(_runtime, &context) != JsNoError) {
-        throw EngineError {};
-      }
+      _checked(JsCreateContext(_runtime, &context));
       return Realm {context, _job_queue};
     }
 

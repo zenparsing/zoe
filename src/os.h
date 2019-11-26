@@ -31,11 +31,12 @@ namespace os {
   // Synchronously reads a text file into a string
   std::string read_text_file_sync(const std::string& path);
 
-  using OnError = void (*) (const Error&, void*);
-  using OnOpenDirectory = void (*) (DirectoryHandle, void*);
-  using OnReadDirectory = void (*) (std::vector<std::string>&, void*);
-  using OnCloseDirectory = void (*) (void*);
-  using OnTimer = void (*) (void*);
+  using OnError = void (*) (const Error& error, void* data);
+  using OnOpenDirectory = void (*) (DirectoryHandle handle, void* data);
+  using OnReadDirectory = void (*) (std::vector<std::string>& entries, void* data);
+  using OnCloseDirectory = void (*) (void* data);
+  using OnProcessExit = void (*) (int64_t status, int signal, void* data);
+  using OnTimer = void (*) (void* data);
 
   // Starts a timer
   TimerHandle start_timer(
@@ -87,6 +88,21 @@ namespace os {
   template<typename T>
   void close_directory(DirectoryHandle handle, void* data) {
     return close_directory(handle, data, T::on_success, T::on_error);
+  }
+
+  int spawn_process(
+    const std::string& cmd,
+    const std::vector<std::string>& args,
+    void* data,
+    OnProcessExit on_exit);
+
+  template<typename T>
+  int spawn_process(
+    const std::string& cmd,
+    const std::vector<std::string>& args,
+    void* data)
+  {
+    return spawn_process(cmd, args, data, T::on_exit);
   }
 
 }

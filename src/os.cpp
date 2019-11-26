@@ -22,7 +22,7 @@ namespace os {
     };
   }
 
-  void _check_uv(int code) {
+  inline void _check_uv(int code) {
     if (code < 0) {
       throw error_from_uv_result(code);
     }
@@ -138,7 +138,7 @@ namespace os {
     uv_fs_t req;
 
     // Open file
-    uv_file file = uv_fs_open(nullptr, &req, path.c_str(), O_RDONLY, 0, nullptr);
+    uv_file file = uv_fs_open(nullptr, &req, path.c_str(), UV_FS_O_RDONLY, 0, nullptr);
     uv_fs_req_cleanup(&req);
     _check_uv(file);
 
@@ -324,6 +324,72 @@ namespace os {
       FsReq<Traits>::create_req(data, on_success, on_error),
       dir,
       FsReq<Traits>::callback);
+  }
+
+  // Processes
+
+  struct ProcessReq {
+    uv_process_t req;
+    OnProcessExit on_exit;
+
+    ProcessReq(void* data, OnProcessExit on_exit) : on_exit {on_exit} {
+      req.data = data;
+    }
+
+    static uv_process_t* create_req(void* data, OnProcessExit on_exit) {
+      ProcessReq* instance = new ProcessReq(data, on_exit);
+      return &instance->req;
+    }
+
+    static void exit_callback(uv_process_t* req, int64_t status, int signal) {
+      static_assert(offsetof(struct ProcessReq, req) == 0);
+      auto* instance = reinterpret_cast<ProcessReq*>(req);
+      auto cleanup = on_scope_exit([=]() {
+        uv_close(reinterpret_cast<uv_handle_t*>(req), close_callback);
+      });
+      instance->on_exit(status, signal, req->data);
+    }
+
+    static void close_callback(uv_handle_t* handle) {
+      auto* instance = reinterpret_cast<ProcessReq*>(handle);
+      delete instance;
+    }
+  };
+
+  int spawn_process(
+    const std::string& cmd,
+    const std::vector<std::string>& args,
+    void* data,
+    OnProcessExit on_exit)
+  {
+    uv_process_t* child = ProcessReq::create_req(data, on_exit);
+
+    uv_process_options_t options = {0};
+    options.exit_cb = ProcessReq::exit_callback;
+    options.file = cmd.c_str();
+
+    char** cmd_args = new char*[args.size() + 1];
+    auto cleanup = on_scope_exit([=]() { delete[] cmd_args; });
+    cmd_args[args.size()] = nullptr;
+    for (size_t i = 0; i < args.size(); ++i) {
+      cmd_args[i] = const_cast<char*>(args[i].c_str());
+    }
+
+    options.args = cmd_args;
+
+    uv_stdio_container_t child_stdio[3];
+    child_stdio[0].flags = UV_INHERIT_FD;
+    child_stdio[0].data.fd = 0;
+    child_stdio[1].flags = UV_INHERIT_FD;
+    child_stdio[1].data.fd = 1;
+    child_stdio[2].flags = UV_INHERIT_FD;
+    child_stdio[2].data.fd = 2;
+
+    options.stdio_count = 3;
+    options.stdio = child_stdio;
+
+    _check_uv(uv_spawn(uv_default_loop(), child, &options));
+    return child->pid;
   }
 
 }

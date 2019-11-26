@@ -1,7 +1,9 @@
-import * as directories from 'directories.js';
-import * as timers from 'timers.js';
+import * as directory from 'directory.js';
+import * as timer from 'timer.js';
+import * as process from 'process.js';
 
 export async function main(zoe) {
-  await directories.test(zoe.sys);
-  await timers.test(zoe.sys);
+  await directory.test(zoe.sys);
+  await timer.test(zoe.sys);
+  await process.test(zoe.sys);
 }

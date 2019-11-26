@@ -264,6 +264,43 @@ namespace {
     }
   };
 
+  struct SpawnProcessFunc : public NativeFunc {
+    inline static std::string name = "spawnProcess";
+
+    struct Callback {
+      static void on_exit(int64_t status, int signal, void* data) {
+        dispatch_os_result(data, [&](auto& api) {
+          // TODO: Expose status and signal
+          return nullptr;
+        });
+      }
+    };
+
+    static Var call(RealmAPI& api, CallArgs& args) {
+      std::string cmd = api.utf8_string(args[1]);
+
+      auto args_array = api.to_object(args[2]);
+      auto length_var = api.get_property(args_array, "length");
+      auto length = api.to_integer(length_var);
+
+      std::vector<std::string> arg_list;
+      for (int i = 0; i < length; ++i) {
+        auto arg = api.get_indexed_property(args_array, i);
+        arg_list.push_back(api.utf8_string(arg));
+      }
+
+      auto callback = track_callback_arg(args[3]);
+
+      try {
+        int id = os::spawn_process<Callback>(cmd, arg_list, callback);
+        return api.create_number(id);
+      } catch (const os::Error& error) {
+        throw_os_error(api, error);
+        return nullptr;
+      }
+    }
+  };
+
   struct ObjectBuilder {
     RealmAPI& _api;
     Var _object;
@@ -315,6 +352,8 @@ Var sys_object::create(RealmAPI& api, int arg_count, char** args) {
 
   builder.add_method<StartTimerFunc>();
   builder.add_method<StopTimerFunc>();
+
+  builder.add_method<SpawnProcessFunc>();
 
   return builder.object();
 }
