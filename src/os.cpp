@@ -362,11 +362,12 @@ namespace os {
     void* data,
     OnProcessExit on_exit)
   {
-    // TODO: throw or crash if options.args.size() === 0
     uv_process_t* child = ProcessTask::create_req(data, on_exit);
 
     uv_process_options_t uv_opts = {0};
     uv_opts.exit_cb = ProcessTask::exit_callback;
+
+    // TODO: throw or crash if options.args.size() === 0
     uv_opts.file = options.file.length() > 0
       ? options.file.c_str()
       : options.args[0].c_str();
@@ -380,9 +381,32 @@ namespace os {
     cmd_args.push_back(nullptr);
     uv_opts.args = cmd_args.data();
 
-    // TODO: handle options.env
-    // TODO: handle options.cwd
-    // TODO: handle options.flags
+    // Current working directory
+    if (options.cwd.length() > 0) {
+      uv_opts.cwd = options.cwd.c_str();
+    }
+
+    // Environment variables
+    std::vector<std::string> env_strings;
+    std::vector<char*> uv_env_array;
+    if (options.flags & ProcessFlags::inherit_env) {
+      if (options.env.size() > 0) {
+        // TODO: Merge with current env
+      }
+    } else {
+      uv_env_array.reserve(options.env.size() + 1);
+      for (auto& pair : options.env) {
+        env_strings.push_back(pair.first + "=" + pair.second);
+        char* cstr = const_cast<char*>(env_strings.back().c_str());
+        uv_env_array.push_back(cstr);
+      }
+      uv_env_array.push_back(nullptr);
+      uv_opts.env = uv_env_array.data();
+    }
+
+    if (options.flags & ProcessFlags::detached) {
+      uv_opts.flags &= UV_PROCESS_DETACHED;
+    }
 
     // TODO: figure all of this out
     uv_stdio_container_t child_stdio[3];
