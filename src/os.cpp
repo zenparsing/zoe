@@ -168,29 +168,29 @@ namespace os {
   }
 
   template<typename Traits>
-  struct FsReq {
+  struct FsTask {
     using OnSuccess = typename Traits::OnSuccess;
 
     uv_fs_t req;
-    void* data; // TODO: I think we can just store this on req?
     OnSuccess on_success;
     OnError on_error;
 
-    FsReq(void* data, OnSuccess on_success, OnError on_error) :
-      data {data},
+    FsTask(void* data, OnSuccess on_success, OnError on_error) :
       on_success {on_success},
       on_error {on_error}
-    {}
+    {
+      req.data = data;
+    }
 
     static uv_fs_t* create_req(void* data, OnSuccess on_success, OnError on_error) {
-      FsReq* instance = new FsReq(data, on_success, on_error);
+      FsTask* instance = new FsTask(data, on_success, on_error);
       return &instance->req;
     }
 
     static void callback(uv_fs_t* req) {
-      static_assert(offsetof(struct FsReq, req) == 0);
+      static_assert(offsetof(struct FsTask, req) == 0);
 
-      auto* instance = reinterpret_cast<FsReq*>(req);
+      auto* instance = reinterpret_cast<FsTask*>(req);
       auto cleanup = on_scope_exit([=]() {
         uv_fs_req_cleanup(req);
         delete instance;
@@ -198,16 +198,16 @@ namespace os {
 
       if (req->result < 0) {
         int code = static_cast<int>(req->result);
-        instance->on_error(error_from_uv_result(code), instance->data);
+        instance->on_error(error_from_uv_result(code), req->data);
         return;
       }
 
       using MapReturnType = decltype(Traits::map(std::declval<uv_fs_t*>()));
 
       if constexpr (std::is_void_v<MapReturnType>) {
-        instance->on_success(instance->data);
+        instance->on_success(req->data);
       } else {
-        instance->on_success(Traits::map(req), instance->data);
+        instance->on_success(Traits::map(req), req->data);
       }
     }
   };
@@ -236,9 +236,9 @@ namespace os {
 
     uv_fs_opendir(
       uv_default_loop(),
-      FsReq<Traits>::create_req(data, on_success, on_error),
+      FsTask<Traits>::create_req(data, on_success, on_error),
       path.c_str(),
-      FsReq<Traits>::callback);
+      FsTask<Traits>::callback);
   }
 
   void read_directory(
@@ -256,7 +256,8 @@ namespace os {
         for (int i = 0; i < req->result; ++i) {
           entries.emplace_back(dir->dirents[i].name);
         }
-        // TODO: This should be safe to run twice...
+        // TODO: This should be safe to run twice...? We should
+        // create a better way to handle this.
         uv_fs_req_cleanup(req);
         delete[] dir->dirents;
         dir->dirents = nullptr;
@@ -285,9 +286,9 @@ namespace os {
 
     uv_fs_readdir(
       uv_default_loop(),
-      FsReq<Traits>::create_req(data, on_success, on_error),
+      FsTask<Traits>::create_req(data, on_success, on_error),
       dir,
-      FsReq<Traits>::callback);
+      FsTask<Traits>::callback);
   }
 
   void close_directory(
@@ -321,29 +322,29 @@ namespace os {
 
     uv_fs_closedir(
       uv_default_loop(),
-      FsReq<Traits>::create_req(data, on_success, on_error),
+      FsTask<Traits>::create_req(data, on_success, on_error),
       dir,
-      FsReq<Traits>::callback);
+      FsTask<Traits>::callback);
   }
 
   // Processes
 
-  struct ProcessReq {
+  struct ProcessTask {
     uv_process_t req;
     OnProcessExit on_exit;
 
-    ProcessReq(void* data, OnProcessExit on_exit) : on_exit {on_exit} {
+    ProcessTask(void* data, OnProcessExit on_exit) : on_exit {on_exit} {
       req.data = data;
     }
 
     static uv_process_t* create_req(void* data, OnProcessExit on_exit) {
-      ProcessReq* instance = new ProcessReq(data, on_exit);
+      ProcessTask* instance = new ProcessTask(data, on_exit);
       return &instance->req;
     }
 
     static void exit_callback(uv_process_t* req, int64_t status, int signal) {
-      static_assert(offsetof(struct ProcessReq, req) == 0);
-      auto* instance = reinterpret_cast<ProcessReq*>(req);
+      static_assert(offsetof(struct ProcessTask, req) == 0);
+      auto* instance = reinterpret_cast<ProcessTask*>(req);
       auto cleanup = on_scope_exit([=]() {
         uv_close(reinterpret_cast<uv_handle_t*>(req), close_callback);
       });
@@ -351,32 +352,39 @@ namespace os {
     }
 
     static void close_callback(uv_handle_t* handle) {
-      auto* instance = reinterpret_cast<ProcessReq*>(handle);
+      auto* instance = reinterpret_cast<ProcessTask*>(handle);
       delete instance;
     }
   };
 
-  int spawn_process(
-    const std::string& cmd,
-    const std::vector<std::string>& args,
+  int start_process(
+    const ProcessOptions& options,
     void* data,
     OnProcessExit on_exit)
   {
-    uv_process_t* child = ProcessReq::create_req(data, on_exit);
+    // TODO: throw or crash if options.args.size() === 0
+    uv_process_t* child = ProcessTask::create_req(data, on_exit);
 
-    uv_process_options_t options = {0};
-    options.exit_cb = ProcessReq::exit_callback;
-    options.file = cmd.c_str();
+    uv_process_options_t uv_opts = {0};
+    uv_opts.exit_cb = ProcessTask::exit_callback;
+    uv_opts.file = options.file.length() > 0
+      ? options.file.c_str()
+      : options.args[0].c_str();
 
-    char** cmd_args = new char*[args.size() + 1];
-    auto cleanup = on_scope_exit([=]() { delete[] cmd_args; });
-    cmd_args[args.size()] = nullptr;
-    for (size_t i = 0; i < args.size(); ++i) {
-      cmd_args[i] = const_cast<char*>(args[i].c_str());
+    // UV args is a null-terminated array of null-terminated strings
+    std::vector<char*> cmd_args;
+    cmd_args.reserve(options.args.size() + 1);
+    for (size_t i = 0; i < options.args.size(); ++i) {
+      cmd_args.push_back(const_cast<char*>(options.args[i].c_str()));
     }
+    cmd_args.push_back(nullptr);
+    uv_opts.args = cmd_args.data();
 
-    options.args = cmd_args;
+    // TODO: handle options.env
+    // TODO: handle options.cwd
+    // TODO: handle options.flags
 
+    // TODO: figure all of this out
     uv_stdio_container_t child_stdio[3];
     child_stdio[0].flags = UV_INHERIT_FD;
     child_stdio[0].data.fd = 0;
@@ -385,10 +393,10 @@ namespace os {
     child_stdio[2].flags = UV_INHERIT_FD;
     child_stdio[2].data.fd = 2;
 
-    options.stdio_count = 3;
-    options.stdio = child_stdio;
+    uv_opts.stdio_count = 3;
+    uv_opts.stdio = child_stdio;
 
-    _check_uv(uv_spawn(uv_default_loop(), child, &options));
+    _check_uv(uv_spawn(uv_default_loop(), child, &uv_opts));
     return child->pid;
   }
 

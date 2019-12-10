@@ -5,7 +5,7 @@ export async function test(sys) {
   let exitPromise = new Promise((resolve, reject) => {
     // Run zoe without any args
     let cmd = sys.args[0];
-    process = sys.spawnProcess(cmd, [cmd], (err, result) => {
+    process = sys.startProcess([cmd], {}, (err, result) => {
       if (err) reject(err);
       else resolve(result);
     });

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <map>
 
 #include "common.h"
 
@@ -90,19 +91,30 @@ namespace os {
     return close_directory(handle, data, T::on_success, T::on_error);
   }
 
-  int spawn_process(
-    const std::string& cmd,
-    const std::vector<std::string>& args,
+  namespace ProcessFlags {
+    using Type = uint32_t;
+    constexpr Type none = 0;
+    constexpr Type detached = 0x1;
+    constexpr Type inherit_env = 0x2;
+  }
+
+  struct ProcessOptions {
+    std::vector<std::string> args;
+    std::string file = "";
+    std::string cwd = "";
+    std::map<std::string, std::string> env;
+    ProcessFlags::Type flags = ProcessFlags::none;
+  };
+
+  // Starts a process
+  int start_process(
+    const ProcessOptions& options,
     void* data,
     OnProcessExit on_exit);
 
   template<typename T>
-  int spawn_process(
-    const std::string& cmd,
-    const std::vector<std::string>& args,
-    void* data)
-  {
-    return spawn_process(cmd, args, data, T::on_exit);
+  int start_process(const ProcessOptions& options, void* data) {
+    return start_process(options, data, T::on_exit);
   }
 
 }

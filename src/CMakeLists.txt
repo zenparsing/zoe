@@ -1,6 +1,6 @@
-project(zoe)
-
 cmake_minimum_required(VERSION 3.15)
+
+project(zoe)
 
 set(CMAKE_CXX_STANDARD 17)
 

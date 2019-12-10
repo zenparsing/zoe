@@ -194,6 +194,8 @@ namespace js {
     static_assert(std::is_same_v<decltype(T::instance_kind), Kind>);
     static_assert(offsetof(T, kind) == 0);
 
+    static constexpr Kind instance_kind = T::instance_kind;
+
     static void CHAKRA_CALLBACK finalize_callback(void* data) {
       delete reinterpret_cast<T*>(data);
     }
@@ -268,7 +270,7 @@ namespace js {
     Var create_host_object(Args... args) {
       using Traits = HostObjectDataTraits<T>;
       auto* instance = new T(args...);
-      assert(instance->kind == T::instance_kind);
+      assert(instance->kind == Traits::instance_kind);
       Var result;
       JsCreateExternalObject(instance, Traits::finalize_callback, &result);
       return result;
@@ -283,7 +285,7 @@ namespace js {
         return nullptr;
       }
       auto* kind_ptr = reinterpret_cast<const unsigned*>(data);
-      if (*kind_ptr != T::instance_kind) {
+      if (*kind_ptr != Traits::instance_kind) {
         return nullptr;
       }
       return reinterpret_cast<T*>(data);
